@@ -1,0 +1,342 @@
+# apps/textai/lowman_analyzer.py
+import json
+import urllib.request
+import base64
+from datetime import datetime
+
+# База знаний по рейдам (сокращённая версия для демо)
+RAID_DATABASE = {
+    # Root of Nightmares
+    2381418756: {
+        "name": "Root of Nightmares",
+        "solo": {"excellent": 1500, "good": 2400, "decent": 3600},
+        "duo": {"excellent": 1800, "good": 2700, "decent": 4200},
+        "trio": {"excellent": 1500, "good": 2400, "decent": 3600},
+        "best_class": "Warlock (Well of Radiance)"
+    },
+    # Vow of the Disciple
+    1441982566: {
+        "name": "Vow of the Disciple",
+        "solo": {"excellent": 5400, "good": 7200, "decent": 10800},
+        "duo": {"excellent": 2700, "good": 4200, "decent": 6000},
+        "trio": {"excellent": 2400, "good": 3600, "decent": 5400},
+        "best_class": "Hunter (Void invis)"
+    },
+    # King's Fall
+    1374392663: {
+        "name": "King's Fall",
+        "solo": {"excellent": 6000, "good": 9000, "decent": 14400},
+        "duo": {"excellent": 3600, "good": 5400, "decent": 7200},
+        "trio": {"excellent": 3000, "good": 4800, "decent": 6600},
+        "best_class": "Titan (Solar bonk)"
+    },
+    # Deep Stone Crypt
+    910380154: {
+        "name": "Deep Stone Crypt",
+        "solo": {"excellent": 2400, "good": 4200, "decent": 6000},
+        "duo": {"excellent": 1800, "good": 3000, "decent": 4800},
+        "trio": {"excellent": 1500, "good": 2700, "decent": 4200},
+        "best_class": "Hunter (Shatterskate)"
+    },
+    # Vault of Glass
+    3714931445: {
+        "name": "Vault of Glass",
+        "solo": {"excellent": 3600, "good": 5400, "decent": 7200},
+        "duo": {"excellent": 2400, "good": 3600, "decent": 5400},
+        "trio": {"excellent": 1800, "good": 3000, "decent": 4800},
+        "best_class": "Warlock (Well skate)"
+    },
+    # Salvation's Edge
+    2464903763: {
+        "name": "Salvation's Edge",
+        "solo": {"excellent": 7200, "good": 10800, "decent": 14400},
+        "duo": {"excellent": 4800, "good": 7200, "decent": 10800},
+        "trio": {"excellent": 3600, "good": 5400, "decent": 9000},
+        "best_class": "Titan (Banner of War)"
+    },
+    # Crota's End
+    4172311151: {
+        "name": "Crota's End",
+        "solo": {"excellent": 2400, "good": 4200, "decent": 6000},
+        "duo": {"excellent": 1800, "good": 3000, "decent": 4800},
+        "trio": {"excellent": 1500, "good": 2400, "decent": 3600},
+        "best_class": "Warlock (Well)"
+    },
+    # Last Wish
+    2122313384: {
+        "name": "Last Wish",
+        "solo": {"excellent": 5400, "good": 9000, "decent": 12600},
+        "duo": {"excellent": 3600, "good": 5400, "decent": 7200},
+        "trio": {"excellent": 2400, "good": 4200, "decent": 6000},
+        "best_class": "Hunter (Shatterskate)"
+    },
+    # Garden of Salvation
+    3458480158: {
+        "name": "Garden of Salvation",
+        "solo": {"excellent": 4200, "good": 6000, "decent": 9000},
+        "duo": {"excellent": 2400, "good": 3600, "decent": 5400},
+        "trio": {"excellent": 1800, "good": 3000, "decent": 4800},
+        "best_class": "Warlock (Well)"
+    },
+}
+
+DUNGEON_DATABASE = {
+    1262461612: {"name": "Warlord's Ruin", "target": 2700, "class": "Titan"},
+    1071234643: {"name": "Ghosts of the Deep", "target": 3600, "class": "Warlock"},
+    2032534092: {"name": "Duality", "target": 2400, "class": "Hunter"},
+}
+
+
+class LowmanAnalyzer:
+    def __init__(self, api_key=None):
+        self.api_key = api_key
+        self.oauth_token = None
+        self.use_mock = False
+
+    def set_oauth_token(self, token):
+        """Устанавливает OAuth токен для запросов"""
+        self.oauth_token = token
+
+    def is_raid_report_url(self, text):
+        return any(x in text.lower() for x in ['raid.report', 'raidhub.io'])
+
+    def extract_profile(self, url):
+        """Извлекает тип платформы и ID из ссылки"""
+        url = url.rstrip('/')
+
+        if '?' in url:
+            url = url.split('?')[0]
+
+        # Raid Report ссылка
+        if "raid.report" in url:
+            parts = url.split('/')
+
+            for i, part in enumerate(parts):
+                if part.isdigit() and len(part) > 10:
+                    membership_id = part
+                    if i > 0:
+                        platform = parts[i - 1]
+                    else:
+                        platform = 'pc'
+                    break
+            else:
+                raise Exception("Не удалось найти ID в ссылке")
+
+            platform_map = {'ps': 2, 'psn': 2, 'xb': 1, 'xbox': 1, 'pc': 3, 'steam': 3}
+            membership_type = platform_map.get(platform.lower(), 3)
+
+            print(f"✅ Извлечено: platform={platform} -> type={membership_type}, id={membership_id}")
+            return membership_type, membership_id
+
+        # RaidHub ссылка (поддерживаем оба формата: /player/ и /profile/)
+        elif "raidhub.io" in url:
+            parts = url.split('/')
+            # Ищем ID (19 цифр) в URL
+            for part in parts:
+                if part.isdigit() and len(part) > 10:
+                    membership_id = part
+                    break
+            else:
+                raise Exception("Не удалось найти ID в ссылке RaidHub")
+
+            # RaidHub всегда использует Steam ID (тип 3) для /profile/
+            membership_type = 3
+
+            print(f"✅ RaidHub: type={membership_type}, id={membership_id}")
+            return membership_type, membership_id
+
+        raise Exception("Неподдерживаемый формат ссылки")
+
+    def analyze_profile(self, url):
+        """Основной метод анализа профиля"""
+        try:
+            membership_type, membership_id = self.extract_profile(url)
+            print(f"🔍 Извлечено: type={membership_type}, id={membership_id}")
+
+            if self.use_mock:
+                print("🔧 РАБОТАЕТ ТЕСТОВЫЙ РЕЖИМ С МОК-ДАННЫМИ")
+                raids = self._get_mock_raids()
+            else:
+                raids = self._fetch_raids(membership_type, membership_id)
+
+            if not raids:
+                return "❌ Не удалось загрузить рейды. Проверьте:\n• Приватность профиля (должен быть открыт)\n• Правильность ссылки"
+
+            analysis = self._analyze_raids(raids)
+            return self._format_advice(analysis)
+
+        except Exception as e:
+            return f"❌ Ошибка анализа: {str(e)}"
+
+    def _fetch_raids(self, membership_type, membership_id):
+        """Загружает рейды через RaidHub API с правильными заголовками"""
+
+        url = f"https://raidhub.io/api/player/{membership_type}/{membership_id}"
+        print(f"🌐 Запрос к RaidHub API: {url}")
+
+        # Важно: имитируем браузер для обхода 403
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/json",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Origin": "https://raidhub.io",
+            "Referer": "https://raidhub.io/"
+        }
+
+        try:
+            req = urllib.request.Request(url, headers=headers)
+
+            with urllib.request.urlopen(req, timeout=10) as response:
+                data = json.loads(response.read())
+                print(f"✅ RaidHub ответ получен")
+
+                raids = []
+
+                # RaidHub возвращает данные в поле 'activities' или 'data'
+                activities = data.get('activities', data.get('data', []))
+                print(f"📊 Всего активностей: {len(activities)}")
+
+                # Хеши рейдов
+                RAID_NAME_TO_HASH = {
+                    'rootofnightmares': 2381418756,
+                    'vowofthedisciple': 1441982566,
+                    'kingsfall': 1374392663,
+                    'deepstonecrypt': 910380154,
+                    'vaultofglass': 3714931445,
+                    'salvationsedge': 2464903763,
+                    'crotasend': 4172311151,
+                    'lastwish': 2122313384,
+                    'gardenofsalvation': 3458480158,
+                }
+
+                for act in activities:
+                    # Проверяем разные возможные поля
+                    act_type = act.get('activityType') or act.get('type') or act.get('modeName', '')
+                    completed = act.get('completed', act.get('isCompleted', False))
+                    time_sec = act.get('timeSeconds') or act.get('time', 0)
+                    players = act.get('playerCount') or act.get('players', 0)
+
+                    if ('raid' in str(act_type).lower() or act.get('activityMode') == 4) and completed:
+                        raid_name = act.get('activityName', '').lower().replace(' ', '').replace("'", '')
+                        raid_hash = None
+
+                        for name, hash_val in RAID_NAME_TO_HASH.items():
+                            if name in raid_name:
+                                raid_hash = hash_val
+                                break
+
+                        if raid_hash:
+                            print(f"  • {act.get('activityName')}: {players} игроков, {time_sec}с")
+                            raids.append({
+                                'hash': raid_hash,
+                                'time': int(time_sec),
+                                'players': int(players),
+                                'date': act.get('date', act.get('period', ''))
+                            })
+
+                print(f"📊 Найдено завершенных рейдов: {len(raids)}")
+                print(f"📊 Из них лоуменов (1-3 игрока): {len([r for r in raids if r['players'] <= 3])}")
+                return raids
+
+        except urllib.error.HTTPError as e:
+            print(f"❌ HTTP ошибка {e.code}: {e.reason}")
+            print("Попробуйте использовать ссылку формата https://raid.report/pc/ID")
+            raise
+        except Exception as e:
+            print(f"❌ Ошибка RaidHub API: {e}")
+            raise
+
+    def _analyze_raids(self, raids):
+        """Анализирует рейды и находит лучшие времена"""
+        best_times = {}
+        print(f"🔍 Анализирую {len(raids)} рейдов...")
+
+        for raid in raids:
+            hash_key = raid['hash']
+            print(f"  • Рейд с хешем {hash_key}, игроков: {raid['players']}, время: {raid['time']}с")
+
+            if hash_key not in RAID_DATABASE:
+                print(f"    ⚠️ Хеш {hash_key} не найден в базе (нужно добавить)")
+                continue
+
+            players = raid['players']
+            time_sec = raid['time']
+
+            # Определяем тип лоумена
+            if players == 1:
+                lowman_type = 'solo'
+            elif players == 2:
+                lowman_type = 'duo'
+            elif players == 3:
+                lowman_type = 'trio'
+            else:
+                continue
+
+            key = f"{hash_key}_{lowman_type}"
+            if key not in best_times or time_sec < best_times[key]['time']:
+                best_times[key] = {
+                    'raid_name': RAID_DATABASE[hash_key]['name'],
+                    'type': lowman_type,
+                    'time': time_sec,
+                    'benchmarks': RAID_DATABASE[hash_key][lowman_type],
+                    'best_class': RAID_DATABASE[hash_key]['best_class']
+                }
+
+        return best_times
+
+    def _format_time(self, seconds):
+        """Форматирует секунды в ММ:СС"""
+        return f"{seconds // 60}:{seconds % 60:02d}"
+
+    def _format_advice(self, analysis):
+        """Форматирует результат анализа в читаемый текст"""
+        if not analysis:
+            return "😕 Не найдено ни одного лоумена в истории. Попробуйте пройти соло/дуо/трио рейды!"
+
+        lines = ["🎯 **АНАЛИЗ ЛОУМЕНОВ**\n"]
+        lines.append(f"Найдено лоуменов: {len(analysis)}\n")
+
+        needs_improve = []
+        good_runs = []
+
+        for key, data in analysis.items():
+            time_str = self._format_time(data['time'])
+            excellent = data['benchmarks']['excellent']
+            good = data['benchmarks']['good']
+
+            if data['time'] <= excellent:
+                status = "💎 ОТЛИЧНО"
+                good_runs.append((data['raid_name'], data['type'], time_str))
+            elif data['time'] <= good:
+                status = "✅ ХОРОШО"
+                needs_improve.append((data['raid_name'], data['type'], time_str,
+                                      self._format_time(excellent)))
+            else:
+                status = "⚠️ МОЖНО ЛУЧШЕ"
+                needs_improve.append((data['raid_name'], data['type'], time_str,
+                                      self._format_time(good)))
+
+            lines.append(f"• {data['raid_name']} ({data['type']}): {time_str} — {status}")
+
+        # Советы по улучшению
+        if needs_improve:
+            lines.append("\n📈 **МОЖНО УЛУЧШИТЬ:**")
+            for raid_name, ltype, current, target in needs_improve[:3]:
+                lines.append(f"• {raid_name} {ltype}: {current} → цель {target}")
+
+        # Что ещё попробовать
+        completed_raids = set(data['raid_name'] for data in analysis.values())
+        missing = [r for r in RAID_DATABASE.values() if r['name'] not in completed_raids]
+
+        if missing:
+            lines.append("\n🎯 **РЕКОМЕНДУЮ ПОПРОБОВАТЬ:**")
+            for raid in missing[:2]:
+                lines.append(f"• {raid['name']} соло на {raid['best_class']}")
+
+        # Персональный совет
+        if len(analysis) >= 3:
+            lines.append("\n💡 Ты уже неплохо шаришь! Попробуй соло Vow of the Disciple на Хантере с инвизом.")
+        else:
+            lines.append("\n💡 Начни с Deep Stone Crypt — самый простой рейд для соло.")
+
+        return "\n".join(lines)
