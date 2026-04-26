@@ -9,86 +9,49 @@ RAID_DATABASE = {
         "name": "Root of Nightmares",
         "has_master": True,
         "encounters": 4,
-        "solo": {"excellent": 1500, "good": 2400, "decent": 3600},
-        "duo": {"excellent": 1800, "good": 2700, "decent": 4200},
-        "trio": {"excellent": 1500, "good": 2400, "decent": 3600},
-        "best_class": "Warlock (Well of Radiance)"
     },
     1441982566: {
         "name": "Vow of the Disciple",
         "has_master": True,
         "encounters": 4,
-        "solo": {"excellent": 5400, "good": 7200, "decent": 10800},
-        "duo": {"excellent": 2700, "good": 4200, "decent": 6000},
-        "trio": {"excellent": 2400, "good": 3600, "decent": 5400},
-        "best_class": "Hunter (Void invis)"
     },
     1374392663: {
         "name": "King's Fall",
         "has_master": True,
         "encounters": 5,
-        "solo": {"excellent": 6000, "good": 9000, "decent": 14400},
-        "duo": {"excellent": 3600, "good": 5400, "decent": 7200},
-        "trio": {"excellent": 3000, "good": 4800, "decent": 6600},
-        "best_class": "Titan (Solar bonk)"
     },
     910380154: {
         "name": "Deep Stone Crypt",
         "has_master": False,
         "encounters": 4,
-        "solo": {"excellent": 2400, "good": 4200, "decent": 6000},
-        "duo": {"excellent": 1800, "good": 3000, "decent": 4800},
-        "trio": {"excellent": 1500, "good": 2700, "decent": 4200},
-        "best_class": "Hunter (Shatterskate)"
     },
     3714931445: {
         "name": "Vault of Glass",
         "has_master": True,
         "encounters": 5,
-        "solo": {"excellent": 3600, "good": 5400, "decent": 7200},
-        "duo": {"excellent": 2400, "good": 3600, "decent": 5400},
-        "trio": {"excellent": 1800, "good": 3000, "decent": 4800},
-        "best_class": "Warlock (Well skate)"
     },
     2464903763: {
         "name": "Salvation's Edge",
         "has_master": False,
         "encounters": 5,
-        "solo": {"excellent": 7200, "good": 10800, "decent": 14400},
-        "duo": {"excellent": 4800, "good": 7200, "decent": 10800},
-        "trio": {"excellent": 3600, "good": 5400, "decent": 9000},
-        "best_class": "Titan (Banner of War)"
     },
     4172311151: {
         "name": "Crota's End",
         "has_master": True,
         "encounters": 4,
-        "solo": {"excellent": 2400, "good": 4200, "decent": 6000},
-        "duo": {"excellent": 1800, "good": 3000, "decent": 4800},
-        "trio": {"excellent": 1500, "good": 2400, "decent": 3600},
-        "best_class": "Warlock (Well)"
     },
     2122313384: {
         "name": "Last Wish",
         "has_master": False,
         "encounters": 6,
-        "solo": {"excellent": 5400, "good": 9000, "decent": 12600},
-        "duo": {"excellent": 3600, "good": 5400, "decent": 7200},
-        "trio": {"excellent": 2400, "good": 4200, "decent": 6000},
-        "best_class": "Hunter (Shatterskate)"
     },
     3458480158: {
         "name": "Garden of Salvation",
         "has_master": False,
         "encounters": 4,
-        "solo": {"excellent": 4200, "good": 6000, "decent": 9000},
-        "duo": {"excellent": 2400, "good": 3600, "decent": 5400},
-        "trio": {"excellent": 1800, "good": 3000, "decent": 4800},
-        "best_class": "Warlock (Well)"
     },
 }
 
-# Приоритеты для сортировки (только для порядка отображения)
 DISPLAY_ORDER = {
     "flawless": 1,
     "full": 2,
@@ -156,7 +119,7 @@ class LowmanAnalyzer:
             return f"❌ Ошибка анализа: {str(e)}"
 
     def _parse_duration(self, time_str):
-        """Улучшенный парсер времени"""
+        """Парсер времени"""
         if not time_str:
             return 0
         
@@ -178,24 +141,24 @@ class LowmanAnalyzer:
 
     def _is_fresh_activity(self, activity):
         """Определяет fresh activity (полное прохождение с начала)"""
-        # 1. Проверяем startsFromBeginning в extended данные
+        # Проверяем startsFromBeginning
         starts_from_beginning = activity.get('values', {}).get('startsFromBeginning', {}).get('basic', {}).get('value', False)
+        if starts_from_beginning:
+            return True
         
-        # 2. Проверяем activityCompletions - если 1 и больше, значит это полное прохождение
+        # Проверяем activityCompletions
         completions = activity.get('values', {}).get('activityCompletions', {}).get('basic', {}).get('value', 0)
         if completions > 0:
             return True
         
-        # 3. Дополнительная проверка - время прохождения
-        # Если время больше минимального порога для этого рейда, вероятно это full clear
+        # Проверяем время (если длинное - вероятно full clear)
         ahash = activity.get('activityDetails', {}).get('directorActivityHash', 0)
         raid_info = RAID_DATABASE.get(ahash)
         if raid_info:
             time_seconds = self._parse_duration(
                 activity.get('values', {}).get('activityDurationBasic', {}).get('displayValue', '0s')
             )
-            # Минимальное время для full clear (примерно 10 минут на энкаунтер)
-            min_full_time = raid_info.get('encounters', 3) * 600  # 10 минут на энкаунтер
+            min_full_time = raid_info.get('encounters', 3) * 600
             if time_seconds > min_full_time:
                 return True
         
@@ -203,16 +166,16 @@ class LowmanAnalyzer:
 
     def _is_flawless(self, activity):
         """Определяет flawless (без смертей)"""
-        # 1. Прямой флаг flawless
+        # Прямой флаг flawless
         if activity.get('values', {}).get('flawless', {}).get('basic', {}).get('value', False):
             return True
         
-        # 2. Проверка deaths = 0
+        # Deaths = 0
         deaths = activity.get('values', {}).get('deaths', {}).get('basic', {}).get('value', -1)
         if deaths == 0:
             return True
         
-        # 3. Проверка completionReason = 0 (успешное завершение без вайпов)
+        # completionReason = 0
         completion_reason = activity.get('values', {}).get('completionReason', {}).get('basic', {}).get('value', -1)
         if completion_reason == 0:
             return True
@@ -236,9 +199,7 @@ class LowmanAnalyzer:
         
         all_activities = []
         RAID_HASHES = set(RAID_DATABASE.keys())
-        
-        # Режимы: 4 = Raid, 84 = Master Raid
-        modes = [4, 84]
+        modes = [4, 84]  # Normal и Master
         
         for cid in characters[:3]:
             for mode in modes:
@@ -259,9 +220,6 @@ class LowmanAnalyzer:
             if ahash not in RAID_HASHES:
                 continue
             
-            time_str = act.get('values', {}).get('activityDurationBasic', {}).get('displayValue', '0s')
-            total_seconds = self._parse_duration(time_str)
-            
             try:
                 players = act.get('values', {}).get('playerCount', {}).get('basic', {}).get('value', 0)
             except:
@@ -274,21 +232,18 @@ class LowmanAnalyzer:
             
             raids.append({
                 'hash': ahash,
-                'time': total_seconds,
                 'players': players,
                 'date': act.get('period', ''),
                 'is_fresh': self._is_fresh_activity(act),
                 'is_flawless': self._is_flawless(act),
                 'is_master': is_master,
-                'raw_activity': act  # Сохраняем для дебага
             })
         
         return raids
 
     def _categorize_achievements(self, raids):
         """Категоризирует достижения по рейдам и типам"""
-        # Структура: {raid_hash: {player_count: {clear_type: best_raid}}}
-        achievements = defaultdict(lambda: defaultdict(dict))
+        achievements = defaultdict(dict)
         
         for raid in raids:
             h = raid['hash']
@@ -306,32 +261,18 @@ class LowmanAnalyzer:
             # Создаем ключ с учетом мастер-версии
             key = f"{'master_' if raid['is_master'] else ''}{player_type}_{category}"
             
-            # Сохраняем лучшее время в категории
-            if key not in achievements[h] or raid['time'] < achievements[h][key]['time']:
+            # Сохраняем только факт наличия достижения
+            if key not in achievements[h]:
                 achievements[h][key] = {
-                    'time': raid['time'],
                     'players': p,
                     'category': category,
                     'is_master': raid['is_master'],
                     'is_flawless': raid['is_flawless'],
                     'is_fresh': raid['is_fresh'],
                     'raid_name': RAID_DATABASE[h]['name'],
-                    'best_class': RAID_DATABASE[h]['best_class'],
-                    'benchmarks': RAID_DATABASE[h][player_type]
                 }
         
         return achievements
-
-    def _format_time(self, seconds):
-        if seconds == 0:
-            return "0:00"
-        hours = seconds // 3600
-        minutes = (seconds % 3600) // 60
-        secs = seconds % 60
-        
-        if hours > 0:
-            return f"{hours}:{minutes:02d}:{secs:02d}"
-        return f"{minutes}:{secs:02d}"
 
     def _get_achievement_label(self, achievement):
         """Создает читаемую метку достижения"""
@@ -340,31 +281,17 @@ class LowmanAnalyzer:
         
         parts = []
         
-        # Мастер-сложность
         if achievement['is_master']:
             parts.append("🔥 Master")
         
-        # Основной тип
         if achievement['is_flawless']:
             parts.append(f"💎 {player_label} Flawless")
         elif achievement['is_fresh']:
             parts.append(f"🎯 Full {player_label}")
         else:
-            parts.append(f"⭐ {player_label} (Checkpoint)")
+            parts.append(f"⭐ {player_label}")
         
         return " ".join(parts)
-
-    def _get_time_rating(self, time_seconds, benchmarks):
-        """Оценивает время"""
-        exc = benchmarks.get('excellent', float('inf'))
-        good = benchmarks.get('good', float('inf'))
-        
-        if time_seconds <= exc:
-            return "💎 ОТЛИЧНОЕ ВРЕМЯ"
-        elif time_seconds <= good:
-            return "✅ ХОРОШЕЕ ВРЕМЯ"
-        else:
-            return "⚠️ МОЖНО УЛУЧШИТЬ"
 
     def _format_achievements(self, achievements):
         if not achievements:
@@ -379,40 +306,30 @@ class LowmanAnalyzer:
         for h in sorted(achievements.keys(), key=lambda x: achievements[x][list(achievements[x].keys())[0]]['raid_name']):
             raid_data = achievements[h]
             
-            # Сортируем достижения внутри рейда: flawless > full > checkpoint
+            # Сортируем достижения: flawless > full > checkpoint, solo > duo > trio
             sorted_keys = sorted(raid_data.keys(), 
                                key=lambda k: (
                                    DISPLAY_ORDER[raid_data[k]['category']],
-                                   -raid_data[k]['is_master'],  # мастер выше
-                                   raid_data[k]['players']  # solo > duo > trio
+                                   -raid_data[k]['is_master'],
+                                   raid_data[k]['players']
                                ))
             
-            for i, key in enumerate(sorted_keys):
-                achievement = raid_data[key]
-                
-                if i == 0:
-                    lines.append(f"**{achievement['raid_name']}**")
-                
-                label = self._get_achievement_label(achievement)
-                time_str = self._format_time(achievement['time'])
-                rating = self._get_time_rating(achievement['time'], achievement['benchmarks'])
-                
-                lines.append(f"  • {label}")
-                lines.append(f"    ⏱ {time_str} | {rating}")
-                
-                # Показываем лучший класс только для первого достижения в рейде
-                if i == 0 and achievement.get('best_class'):
-                    lines.append(f"    💡 Лучший класс: {achievement['best_class']}")
+            lines.append(f"**{raid_data[sorted_keys[0]]['raid_name']}**")
             
-            lines.append("")  # Разделитель между рейдами
+            for key in sorted_keys:
+                achievement = raid_data[key]
+                label = self._get_achievement_label(achievement)
+                lines.append(f"  • {label}")
+            
+            lines.append("")
         
         return "\n".join(lines)
+
 
 # Пример использования
 if __name__ == "__main__":
     analyzer = LowmanAnalyzer(api_key="YOUR_API_KEY")
     analyzer.set_oauth_token("YOUR_OAUTH_TOKEN")
     
-    # Тест
     result = analyzer.analyze_profile("https://raid.report/pc/4611686018468854902")
     print(result)
