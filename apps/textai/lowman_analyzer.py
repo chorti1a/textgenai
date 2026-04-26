@@ -183,63 +183,98 @@ class LowmanAnalyzer:
         return False
 
     def _fetch_raids_via_bungie(self, membership_type, membership_id):
-        headers = {
-            "X-API-Key": self.api_key,
-            "Authorization": f"Bearer {self.oauth_token}"
-        }
-        
-        profile_url = f"https://www.bungie.net/Platform/Destiny2/{membership_type}/Profile/{membership_id}/?components=100"
-        req = urllib.request.Request(profile_url, headers=headers)
-        with urllib.request.urlopen(req, timeout=10) as r:
-            profile_data = json.loads(r.read())
-        
-        characters = profile_data.get('Response', {}).get('profile', {}).get('data', {}).get('characterIds', [])
-        if not characters:
-            return []
-        
-        all_activities = []
-        RAID_HASHES = set(RAID_DATABASE.keys())
-        modes = [4, 84]  # Normal и Master
-        
-        for cid in characters[:3]:
-            for mode in modes:
-                url = f"https://www.bungie.net/Platform/Destiny2/{membership_type}/Account/{membership_id}/Character/{cid}/Stats/Activities/?mode={mode}&count=100"
-                try:
-                    req2 = urllib.request.Request(url, headers=headers)
-                    with urllib.request.urlopen(req2, timeout=15) as r2:
-                        data = json.loads(r2.read())
-                    all_activities.extend(data.get('Response', {}).get('activities', []))
-                except Exception as e:
-                    print(f"Error char {cid}, mode {mode}: {e}")
-        
-        raids = []
-        for act in all_activities:
-            details = act.get('activityDetails', {})
-            ahash = details.get('directorActivityHash', 0)
-            
-            if ahash not in RAID_HASHES:
-                continue
-            
+    headers = {
+        "X-API-Key": self.api_key,
+        "Authorization": f"Bearer {self.oauth_token}"
+    }
+    
+    profile_url = f"https://www.bungie.net/Platform/Destiny2/{membership_type}/Profile/{membership_id}/?components=100"
+    req = urllib.request.Request(profile_url, headers=headers)
+    with urllib.request.urlopen(req, timeout=10) as r:
+        profile_data = json.loads(r.read())
+    
+    characters = profile_data.get('Response', {}).get('profile', {}).get('data', {}).get('characterIds', [])
+    if not characters:
+        return []
+    
+    all_activities = []
+    RAID_HASHES = set(RAID_DATABASE.keys())
+    modes = [4, 84]
+    
+    # ДЕБАГ: счетчики
+    debug_counts = {h: 0 for h in RAID_HASHES}
+    
+    for cid in characters[:3]:
+        for mode in modes:
+            url = f"https://www.bungie.net/Platform/Destiny2/{membership_type}/Account/{membership_id}/Character/{cid}/Stats/Activities/?mode={mode}&count=100"
             try:
-                players = act.get('values', {}).get('playerCount', {}).get('basic', {}).get('value', 0)
-            except:
-                players = act.get('values', {}).get('playerCount', {}).get('value', 0)
-            
-            if players not in [1, 2, 3]:
-                continue
-            
-            is_master = details.get('mode', 4) == 84
-            
-            raids.append({
-                'hash': ahash,
-                'players': players,
-                'date': act.get('period', ''),
-                'is_fresh': self._is_fresh_activity(act),
-                'is_flawless': self._is_flawless(act),
-                'is_master': is_master,
-            })
+                req2 = urllib.request.Request(url, headers=headers)
+                with urllib.request.urlopen(req2, timeout=15) as r2:
+                    data = json.loads(r2.read())
+                activities = data.get('Response', {}).get('activities', [])
+                
+                # ДЕБАГ: логируем
+                print(f"Char {cid}, mode {mode}: found {len(activities)} activities")
+                
+                all_activities.extend(activities)
+            except Exception as e:
+                print(f"Error char {cid}, mode {mode}: {e}")
+    
+    raids = []
+    for act in all_activities:
+        details = act.get('activityDetails', {})
+        ahash = details.get('directorActivityHash', 0)
         
-        return raids
+        if ahash not in RAID_HASHES:
+            continue
+        
+        debug_counts[ahash] += 1
+        
+        # ДЕБАГ: сырые данные
+        print(f"\n=== Activity: {RAID_DATABASE[ahash]['name']} ===")
+        print(f"Hash: {ahash}")
+        print(f"Mode: {details.get('mode')}")
+        print(f"Instance: {details.get('instanceId')}")
+        
+        try:
+            players = act.get('values', {}).get('playerCount', {}).get('basic', {}).get('value', 0)
+        except:
+            players = act.get('values', {}).get('playerCount', {}).get('value', 0)
+        
+        print(f"Players: {players}")
+        
+        # ДЕБАГ: все значения для определения fresh/flawless
+        values = act.get('values', {})
+        for key in ['startsFromBeginning', 'activityCompletions', 'flawless', 'deaths', 'completionReason']:
+            val = values.get(key, {}).get('basic', {}).get('value', 'N/A')
+            print(f"{key}: {val}")
+        
+        if players not in [1, 2, 3]:
+            continue
+        
+        is_master = details.get('mode', 4) == 84
+        is_fresh = self._is_fresh_activity(act)
+        is_flawless = self._is_flawless(act)
+        
+        print(f"is_master: {is_master}")
+        print(f"is_fresh: {is_fresh}")
+        print(f"is_flawless: {is_flawless}")
+        
+        raids.append({
+            'hash': ahash,
+            'players': players,
+            'date': act.get('period', ''),
+            'is_fresh': is_fresh,
+            'is_flawless': is_flawless,
+            'is_master': is_master,
+        })
+    
+    print(f"\n=== FINAL COUNTS ===")
+    for h, count in debug_counts.items():
+        if count > 0:
+            print(f"{RAID_DATABASE[h]['name']}: {count} activities")
+    
+    return raids
 
     def _categorize_achievements(self, raids):
         """Категоризирует достижения по рейдам и типам"""
