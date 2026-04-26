@@ -165,7 +165,7 @@ class LowmanAnalyzer:
         except Exception as e:
             return f"❌ Ошибка анализа: {str(e)}"
 
-    def _fetch_raids_from_bungie(self, membership_type, membership_id):
+        def _fetch_raids_from_bungie(self, membership_type, membership_id):
         """Загружает рейды через Bungie API"""
         
         headers = {
@@ -174,11 +174,14 @@ class LowmanAnalyzer:
         }
         
         # Получаем список персонажей
-        profile_url = f"https://www.bungie.net/Platform/Destiny2/{membership_type}/Profile/{membership_id}/?components=100"
+        profile_url = f"https://www.bungie.net/Platform/Destiny2/{membership_type}/Profile/{membership_id}/?components=100,200"
         req = urllib.request.Request(profile_url, headers=headers)
         
         with urllib.request.urlopen(req, timeout=10) as response:
             profile_data = json.loads(response.read())
+        
+        # Сохраняем весь ответ для отладки
+        print(f"PROFILE_DATA: {json.dumps(profile_data, indent=2)[:500]}")
         
         characters = profile_data.get('Response', {}).get('profile', {}).get('data', {}).get('characterIds', [])
         
@@ -186,20 +189,33 @@ class LowmanAnalyzer:
             print("❌ Не найдено персонажей")
             return []
         
-        # Берём всех персонажей (не только первого)
+        # Берём всех персонажей
         all_activities = []
-        for character_id in characters[:3]:  # Берём до 3 персонажей
-            activity_url = f"https://www.bungie.net/Platform/Destiny2/{membership_type}/Account/{membership_id}/Character/{character_id}/Stats/Activities/?mode=4&count=50"
+        for character_id in characters[:3]:
+            activity_url = f"https://www.bungie.net/Platform/Destiny2/{membership_type}/Account/{membership_id}/Character/{character_id}/Stats/Activities/?mode=4&count=50&page=0"
             req2 = urllib.request.Request(activity_url, headers=headers)
             
             try:
-                with urllib.request.urlopen(req2, timeout=10) as resp2:
+                with urllib.request.urlopen(req2, timeout=15) as resp2:
                     activity_data = json.loads(resp2.read())
-                all_activities.extend(activity_data.get('Response', {}).get('activities', []))
+                
+                activities = activity_data.get('Response', {}).get('activities', [])
+                print(f"CHAR {character_id}: {len(activities)} активностей")
+                all_activities.extend(activities)
+                
             except Exception as e:
                 print(f"⚠️ Ошибка для персонажа {character_id}: {e}")
+                import traceback
+                traceback.print_exc()
         
         print(f"📊 Всего активностей: {len(all_activities)}")
+        
+        # Выводим уникальные хеши для отладки
+        unique_hashes = set()
+        for act in all_activities:
+            h = act.get('activityDetails', {}).get('directorActivityHash', 0)
+            unique_hashes.add(h)
+        print(f"📊 Уникальные хеши: {unique_hashes}")
         
         # Хеши рейдов
         RAID_HASHES = {
@@ -221,25 +237,34 @@ class LowmanAnalyzer:
             if activity_hash in RAID_HASHES:
                 time_str = act.get('values', {}).get('activityDurationBasic', {}).get('displayValue', '0h 0m 0s')
                 
-                # Конвертируем "0h 23m 45s" в секунды
                 parts = time_str.replace('h', '').replace('m', '').replace('s', '').split()
-                if len(parts) == 3:
-                    hours, minutes, seconds = map(int, parts)
-                elif len(parts) == 2:
-                    hours = 0
-                    minutes, seconds = map(int, parts)
-                else:
-                    continue
+                if len(parts) >= 2:
+                    if len(parts) == 3:
+                        hours, minutes, seconds = map(int, parts)
+                    else:
+                        hours = 0
+                        minutes, seconds = map(int, parts)
+                    
+                    total_seconds = hours * 3600 + minutes * 60 + seconds
                 
-                total_seconds = hours * 3600 + minutes * 60 + seconds
-                player_count = act.get('values', {}).get('playerCount', {}).get('basic', {}).get('value', 0)
-                
-                raids.append({
-                    'hash': activity_hash,
-                    'time': total_seconds,
-                    'players': player_count,
-                    'date': act.get('period', '')
-                })
+                    # Пробуем разные пути для playerCount
+                    player_count = 0
+                    try:
+                        player_count = act.get('values', {}).get('playerCount', {}).get('basic', {}).get('value', 0)
+                    except:
+                        try:
+                            player_count = act.get('values', {}).get('playerCount', {}).get('value', 0)
+                        except:
+                            pass
+                    
+                    raids.append({
+                        'hash': activity_hash,
+                        'time': total_seconds,
+                        'players': player_count,
+                        'date': act.get('period', '')
+                    })
+                    
+                    print(f"  ✅ {RAID_HASHES[activity_hash]}: {player_count} чел, {time_str}")
         
         print(f"📊 Найдено рейдов: {len(raids)}")
         return raids
