@@ -168,82 +168,85 @@ class LowmanAnalyzer:
         except Exception as e:
             return f"❌ Ошибка анализа: {str(e)}"
 
-    def _fetch_raids(self, membership_type, membership_id):
-        """Загружает рейды через RaidHub API с правильными заголовками"""
-
-        url = f"https://raidhub.io/api/player/{membership_type}/{membership_id}"
-        print(f"🌐 Запрос к RaidHub API: {url}")
-
-        # Важно: имитируем браузер для обхода 403
+        def _fetch_raids(self, membership_type, membership_id):
+        """Загружает рейды через Bungie API"""
+        
+        # Получаем список персонажей
+        profile_url = f"https://www.bungie.net/Platform/Destiny2/{membership_type}/Profile/{membership_id}/?components=100"
+        
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "application/json",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Origin": "https://raidhub.io",
-            "Referer": "https://raidhub.io/"
+            "X-API-Key": self.api_key,
+            "Authorization": f"Bearer {self.oauth_token}"
         }
-
+        
+        req = urllib.request.Request(profile_url, headers=headers)
+        
         try:
-            req = urllib.request.Request(url, headers=headers)
-
             with urllib.request.urlopen(req, timeout=10) as response:
-                data = json.loads(response.read())
-                print(f"✅ RaidHub ответ получен")
-
-                raids = []
-
-                # RaidHub возвращает данные в поле 'activities' или 'data'
-                activities = data.get('activities', data.get('data', []))
-                print(f"📊 Всего активностей: {len(activities)}")
-
-                # Хеши рейдов
-                RAID_NAME_TO_HASH = {
-                    'rootofnightmares': 2381418756,
-                    'vowofthedisciple': 1441982566,
-                    'kingsfall': 1374392663,
-                    'deepstonecrypt': 910380154,
-                    'vaultofglass': 3714931445,
-                    'salvationsedge': 2464903763,
-                    'crotasend': 4172311151,
-                    'lastwish': 2122313384,
-                    'gardenofsalvation': 3458480158,
-                }
-
-                for act in activities:
-                    # Проверяем разные возможные поля
-                    act_type = act.get('activityType') or act.get('type') or act.get('modeName', '')
-                    completed = act.get('completed', act.get('isCompleted', False))
-                    time_sec = act.get('timeSeconds') or act.get('time', 0)
-                    players = act.get('playerCount') or act.get('players', 0)
-
-                    if ('raid' in str(act_type).lower() or act.get('activityMode') == 4) and completed:
-                        raid_name = act.get('activityName', '').lower().replace(' ', '').replace("'", '')
-                        raid_hash = None
-
-                        for name, hash_val in RAID_NAME_TO_HASH.items():
-                            if name in raid_name:
-                                raid_hash = hash_val
-                                break
-
-                        if raid_hash:
-                            print(f"  • {act.get('activityName')}: {players} игроков, {time_sec}с")
-                            raids.append({
-                                'hash': raid_hash,
-                                'time': int(time_sec),
-                                'players': int(players),
-                                'date': act.get('date', act.get('period', ''))
-                            })
-
-                print(f"📊 Найдено завершенных рейдов: {len(raids)}")
-                print(f"📊 Из них лоуменов (1-3 игрока): {len([r for r in raids if r['players'] <= 3])}")
-                return raids
-
-        except urllib.error.HTTPError as e:
-            print(f"❌ HTTP ошибка {e.code}: {e.reason}")
-            print("Попробуйте использовать ссылку формата https://raid.report/pc/ID")
-            raise
+                profile_data = json.loads(response.read())
+            
+            characters = profile_data.get('Response', {}).get('profile', {}).get('data', {}).get('characterIds', [])
+            
+            if not characters:
+                print("❌ Не найдено персонажей")
+                return []
+            
+            # Берём первого персонажа
+            character_id = characters[0]
+            
+            # Получаем историю активностей (рейды = mode 4)
+            activity_url = f"https://www.bungie.net/Platform/Destiny2/{membership_type}/Account/{membership_id}/Character/{character_id}/Stats/Activities/?mode=4&count=50"
+            
+            req2 = urllib.request.Request(activity_url, headers=headers)
+            
+            with urllib.request.urlopen(req2, timeout=10) as resp2:
+                activity_data = json.loads(resp2.read())
+            
+            activities = activity_data.get('Response', {}).get('activities', [])
+            print(f"📊 Всего активностей: {len(activities)}")
+            
+            # Хеши рейдов (из Bungie манифеста)
+            RAID_HASHES = {
+                1374392663: "King's Fall",
+                1441982566: "Vow of the Disciple",
+                2381418756: "Root of Nightmares",
+                910380154: "Deep Stone Crypt",
+                3714931445: "Vault of Glass",
+                2464903763: "Salvation's Edge",
+                4172311151: "Crota's End",
+                2122313384: "Last Wish",
+                3458480158: "Garden of Salvation",
+            }
+            
+            raids = []
+            for act in activities:
+                activity_hash = act.get('activityDetails', {}).get('directorActivityHash', 0)
+                
+                if activity_hash in RAID_HASHES:
+                    # Bungie хранит время как строку "0h 23m 45s"
+                    time_str = act.get('values', {}).get('activityDurationBasic', {}).get('displayValue', '0h 0m 0s')
+                    
+                    # Конвертируем в секунды
+                    hours = int(time_str.split('h')[0]) if 'h' in time_str else 0
+                    minutes = int(time_str.split('h ')[1].split('m')[0]) if 'm' in time_str else 0
+                    seconds = int(time_str.split('m ')[1].split('s')[0]) if 's' in time_str else 0
+                    
+                    total_seconds = hours * 3600 + minutes * 60 + seconds
+                    
+                    player_count = act.get('values', {}).get('playerCount', {}).get('basic', {}).get('value', 0)
+                    
+                    raids.append({
+                        'hash': activity_hash,
+                        'time': total_seconds,
+                        'players': player_count,
+                        'date': act.get('period', '')
+                    })
+            
+            print(f"📊 Найдено рейдов: {len(raids)}")
+            return raids
+            
         except Exception as e:
-            print(f"❌ Ошибка RaidHub API: {e}")
+            print(f"❌ Ошибка Bungie API: {e}")
             raise
 
     def _analyze_raids(self, raids):
