@@ -13,7 +13,7 @@ SECRET_KEY = 'django-insecure-z%*dc#=zhj-ta^g2vb&g-@a1$a_ajqb7q&x=c5k8yh70&$)-sm
 
 # SECURITY WARNING: don't run with debug turned on in production!
 
-DEBUG = False
+DEBUG = True
 
 # In dev it's common to open the site via tunnel/IP.
 # Keep strict hosts in production; allow all only when DEBUG=True.
