@@ -128,10 +128,9 @@ class LowmanAnalyzer:
             print(f"✅ Извлечено: platform={platform} -> type={membership_type}, id={membership_id}")
             return membership_type, membership_id
 
-        # RaidHub ссылка (поддерживаем оба формата: /player/ и /profile/)
+        # RaidHub ссылка
         elif "raidhub.io" in url:
             parts = url.split('/')
-            # Ищем ID (19 цифр) в URL
             for part in parts:
                 if part.isdigit() and len(part) > 10:
                     membership_id = part
@@ -139,9 +138,7 @@ class LowmanAnalyzer:
             else:
                 raise Exception("Не удалось найти ID в ссылке RaidHub")
 
-            # RaidHub всегда использует Steam ID (тип 3) для /profile/
             membership_type = 3
-
             print(f"✅ RaidHub: type={membership_type}, id={membership_id}")
             return membership_type, membership_id
 
@@ -153,14 +150,14 @@ class LowmanAnalyzer:
             membership_type, membership_id = self.extract_profile(url)
             print(f"🔍 Извлечено: type={membership_type}, id={membership_id}")
 
-            if self.use_mock:
-                print("🔧 РАБОТАЕТ ТЕСТОВЫЙ РЕЖИМ С МОК-ДАННЫМИ")
-                raids = self._get_mock_raids()
-            else:
-                raids = self._fetch_raids(membership_type, membership_id)
+            try:
+                raids = self._fetch_raids_from_bungie(membership_type, membership_id)
+            except Exception as e:
+                print(f"⚠️ Bungie API не сработал: {e}")
+                raids = []
 
             if not raids:
-                return "❌ Не удалось загрузить рейды. Проверьте:\n• Приватность профиля (должен быть открыт)\n• Правильность ссылки"
+                return "❌ Не удалось загрузить рейды.\n\nПроверьте:\n• Приватность профиля (должен быть открыт)\n• Правильность ссылки\n• Наличие рейдов в истории"
 
             analysis = self._analyze_raids(raids)
             return self._format_advice(analysis)
@@ -168,86 +165,84 @@ class LowmanAnalyzer:
         except Exception as e:
             return f"❌ Ошибка анализа: {str(e)}"
 
-        def _fetch_raids(self, membership_type, membership_id):
+    def _fetch_raids_from_bungie(self, membership_type, membership_id):
         """Загружает рейды через Bungie API"""
-        
-        # Получаем список персонажей
-        profile_url = f"https://www.bungie.net/Platform/Destiny2/{membership_type}/Profile/{membership_id}/?components=100"
         
         headers = {
             "X-API-Key": self.api_key,
             "Authorization": f"Bearer {self.oauth_token}"
         }
         
+        # Получаем список персонажей
+        profile_url = f"https://www.bungie.net/Platform/Destiny2/{membership_type}/Profile/{membership_id}/?components=100"
         req = urllib.request.Request(profile_url, headers=headers)
         
-        try:
-            with urllib.request.urlopen(req, timeout=10) as response:
-                profile_data = json.loads(response.read())
-            
-            characters = profile_data.get('Response', {}).get('profile', {}).get('data', {}).get('characterIds', [])
-            
-            if not characters:
-                print("❌ Не найдено персонажей")
-                return []
-            
-            # Берём первого персонажа
-            character_id = characters[0]
-            
-            # Получаем историю активностей (рейды = mode 4)
+        with urllib.request.urlopen(req, timeout=10) as response:
+            profile_data = json.loads(response.read())
+        
+        characters = profile_data.get('Response', {}).get('profile', {}).get('data', {}).get('characterIds', [])
+        
+        if not characters:
+            print("❌ Не найдено персонажей")
+            return []
+        
+        # Берём всех персонажей (не только первого)
+        all_activities = []
+        for character_id in characters[:3]:  # Берём до 3 персонажей
             activity_url = f"https://www.bungie.net/Platform/Destiny2/{membership_type}/Account/{membership_id}/Character/{character_id}/Stats/Activities/?mode=4&count=50"
-            
             req2 = urllib.request.Request(activity_url, headers=headers)
             
-            with urllib.request.urlopen(req2, timeout=10) as resp2:
-                activity_data = json.loads(resp2.read())
+            try:
+                with urllib.request.urlopen(req2, timeout=10) as resp2:
+                    activity_data = json.loads(resp2.read())
+                all_activities.extend(activity_data.get('Response', {}).get('activities', []))
+            except Exception as e:
+                print(f"⚠️ Ошибка для персонажа {character_id}: {e}")
+        
+        print(f"📊 Всего активностей: {len(all_activities)}")
+        
+        # Хеши рейдов
+        RAID_HASHES = {
+            1374392663: "King's Fall",
+            1441982566: "Vow of the Disciple",
+            2381418756: "Root of Nightmares",
+            910380154: "Deep Stone Crypt",
+            3714931445: "Vault of Glass",
+            2464903763: "Salvation's Edge",
+            4172311151: "Crota's End",
+            2122313384: "Last Wish",
+            3458480158: "Garden of Salvation",
+        }
+        
+        raids = []
+        for act in all_activities:
+            activity_hash = act.get('activityDetails', {}).get('directorActivityHash', 0)
             
-            activities = activity_data.get('Response', {}).get('activities', [])
-            print(f"📊 Всего активностей: {len(activities)}")
-            
-            # Хеши рейдов (из Bungie манифеста)
-            RAID_HASHES = {
-                1374392663: "King's Fall",
-                1441982566: "Vow of the Disciple",
-                2381418756: "Root of Nightmares",
-                910380154: "Deep Stone Crypt",
-                3714931445: "Vault of Glass",
-                2464903763: "Salvation's Edge",
-                4172311151: "Crota's End",
-                2122313384: "Last Wish",
-                3458480158: "Garden of Salvation",
-            }
-            
-            raids = []
-            for act in activities:
-                activity_hash = act.get('activityDetails', {}).get('directorActivityHash', 0)
+            if activity_hash in RAID_HASHES:
+                time_str = act.get('values', {}).get('activityDurationBasic', {}).get('displayValue', '0h 0m 0s')
                 
-                if activity_hash in RAID_HASHES:
-                    # Bungie хранит время как строку "0h 23m 45s"
-                    time_str = act.get('values', {}).get('activityDurationBasic', {}).get('displayValue', '0h 0m 0s')
-                    
-                    # Конвертируем в секунды
-                    hours = int(time_str.split('h')[0]) if 'h' in time_str else 0
-                    minutes = int(time_str.split('h ')[1].split('m')[0]) if 'm' in time_str else 0
-                    seconds = int(time_str.split('m ')[1].split('s')[0]) if 's' in time_str else 0
-                    
-                    total_seconds = hours * 3600 + minutes * 60 + seconds
-                    
-                    player_count = act.get('values', {}).get('playerCount', {}).get('basic', {}).get('value', 0)
-                    
-                    raids.append({
-                        'hash': activity_hash,
-                        'time': total_seconds,
-                        'players': player_count,
-                        'date': act.get('period', '')
-                    })
-            
-            print(f"📊 Найдено рейдов: {len(raids)}")
-            return raids
-            
-        except Exception as e:
-            print(f"❌ Ошибка Bungie API: {e}")
-            raise
+                # Конвертируем "0h 23m 45s" в секунды
+                parts = time_str.replace('h', '').replace('m', '').replace('s', '').split()
+                if len(parts) == 3:
+                    hours, minutes, seconds = map(int, parts)
+                elif len(parts) == 2:
+                    hours = 0
+                    minutes, seconds = map(int, parts)
+                else:
+                    continue
+                
+                total_seconds = hours * 3600 + minutes * 60 + seconds
+                player_count = act.get('values', {}).get('playerCount', {}).get('basic', {}).get('value', 0)
+                
+                raids.append({
+                    'hash': activity_hash,
+                    'time': total_seconds,
+                    'players': player_count,
+                    'date': act.get('period', '')
+                })
+        
+        print(f"📊 Найдено рейдов: {len(raids)}")
+        return raids
 
     def _analyze_raids(self, raids):
         """Анализирует рейды и находит лучшие времена"""
@@ -259,13 +254,12 @@ class LowmanAnalyzer:
             print(f"  • Рейд с хешем {hash_key}, игроков: {raid['players']}, время: {raid['time']}с")
 
             if hash_key not in RAID_DATABASE:
-                print(f"    ⚠️ Хеш {hash_key} не найден в базе (нужно добавить)")
+                print(f"    ⚠️ Хеш {hash_key} не найден в базе")
                 continue
 
             players = raid['players']
             time_sec = raid['time']
 
-            # Определяем тип лоумена
             if players == 1:
                 lowman_type = 'solo'
             elif players == 2:
@@ -321,13 +315,11 @@ class LowmanAnalyzer:
 
             lines.append(f"• {data['raid_name']} ({data['type']}): {time_str} — {status}")
 
-        # Советы по улучшению
         if needs_improve:
             lines.append("\n📈 **МОЖНО УЛУЧШИТЬ:**")
             for raid_name, ltype, current, target in needs_improve[:3]:
                 lines.append(f"• {raid_name} {ltype}: {current} → цель {target}")
 
-        # Что ещё попробовать
         completed_raids = set(data['raid_name'] for data in analysis.values())
         missing = [r for r in RAID_DATABASE.values() if r['name'] not in completed_raids]
 
@@ -336,7 +328,6 @@ class LowmanAnalyzer:
             for raid in missing[:2]:
                 lines.append(f"• {raid['name']} соло на {raid['best_class']}")
 
-        # Персональный совет
         if len(analysis) >= 3:
             lines.append("\n💡 Ты уже неплохо шаришь! Попробуй соло Vow of the Disciple на Хантере с инвизом.")
         else:
