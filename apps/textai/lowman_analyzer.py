@@ -4,34 +4,45 @@ import re
 from datetime import datetime
 from collections import defaultdict
 
-RAID_DATABASE = {
-    2381418756: {"name": "Root of Nightmares", "has_master": True},
-    1441982566: {"name": "Vow of the Disciple", "has_master": True},
-    1374392663: {"name": "King's Fall", "has_master": True},
-    910380154: {"name": "Deep Stone Crypt", "has_master": False},
-    3714931445: {"name": "Vault of Glass", "has_master": True},
-    2464903763: {"name": "Salvation's Edge", "has_master": False},
-    4172311151: {"name": "Crota's End", "has_master": True},
-    2122313384: {"name": "Last Wish", "has_master": False},
-    3458480158: {"name": "Garden of Salvation", "has_master": False},
+# Группы оружия для отслеживания
+WEAPON_GROUPS = {
+    "Duality": ["Duality"],
+    "Lorentz Driver": ["Lorentz Driver"],
+    "Icebreaker": ["Icebreaker"],
+    "Last Foray": ["Last Foray"],
+    "Frozen Orbit": ["Frozen Orbit"],
+    "Izanagi's Burden": ["Izanagi's Burden"],
+    "Vigilance Wing": ["Vigilance Wing"],
 }
 
-PLAYER_TYPE_MAP = {1: "solo", 2: "duo", 3: "trio"}
-
-PRIORITY = {
-    "solo_flawless": 1, "duo_flawless": 2, "trio_flawless": 3,
-    "full_solo": 4, "full_duo": 5, "full_trio": 6,
-    "solo_checkpoint": 7, "duo_checkpoint": 8, "trio_checkpoint": 9,
-    "master_full_trio": 10, "master_full_duo": 11, "master_full_solo": 12,
-    "master_trio_checkpoint": 13, "master_duo_checkpoint": 14, "master_solo_checkpoint": 15,
+# Хеши рейдов и данжей
+ACTIVITY_HASHES = {
+    # Рейды
+    2381418756: "Root of Nightmares",
+    1441982566: "Vow of the Disciple",
+    1374392663: "King's Fall",
+    910380154: "Deep Stone Crypt",
+    3714931445: "Vault of Glass",
+    2464903763: "Salvation's Edge",
+    4172311151: "Crota's End",
+    2122313384: "Last Wish",
+    3458480158: "Garden of Salvation",
+    # Данжи
+    1262461612: "Warlord's Ruin",
+    1071234643: "Ghosts of the Deep",
+    2032534092: "Duality",
+    4281577380: "Spire of the Watcher",
+    3455876045: "Grasp of Avarice",
+    3019314560: "Prophecy",
+    1211552239: "Pit of Heresy",
+    1860896583: "Shattered Throne",
 }
 
 
-class LowmanAnalyzer:
+class ActivityAnalyzer:
     def __init__(self, api_key=None):
         self.api_key = api_key
         self.oauth_token = None
-        self.debug_log = []
 
     def set_oauth_token(self, token):
         self.oauth_token = token
@@ -70,27 +81,22 @@ class LowmanAnalyzer:
         raise Exception("Неподдерживаемый формат ссылки")
 
     def analyze_profile(self, url):
-        self.debug_log = []
-        
         try:
             membership_type, membership_id = self.extract_profile(url)
-            raids = self._fetch_all_raids(membership_type, membership_id)
             
-            # ВРЕМЕННО: дебаг
-            if self.debug_log:
-                return f"🔍 DEBUG:\n\n" + "\n".join(self.debug_log[-50:])
+            # Получаем данные
+            activities = self._fetch_completed_activities(membership_type, membership_id)
+            weapon_stats = self._fetch_weapon_stats(membership_type, membership_id)
             
-            if not raids:
-                return "❌ Не удалось загрузить рейды."
+            if not activities and not weapon_stats:
+                return "❌ Не удалось загрузить данные."
             
-            achievements = self._process_raids(raids)
-            return self._format_results(achievements)
+            return self._format_analysis(activities, weapon_stats)
         except Exception as e:
-            debug_text = "\n".join(self.debug_log[-20:]) if self.debug_log else ""
-            return f"❌ Ошибка: {str(e)}\n\n{debug_text}"
+            return f"❌ Ошибка анализа: {str(e)}"
 
-    def _fetch_all_raids(self, membership_type, membership_id):
-        """Получает ВСЕ рейдовые активности через PGCR"""
+    def _fetch_completed_activities(self, membership_type, membership_id):
+        """Получает завершенные рейды и данжи"""
         headers = {
             "X-API-Key": self.api_key,
             "Authorization": f"Bearer {self.oauth_token}"
@@ -103,198 +109,147 @@ class LowmanAnalyzer:
             profile_data = json.loads(r.read())
         
         characters = profile_data.get('Response', {}).get('profile', {}).get('data', {}).get('characterIds', [])
-        self.debug_log.append(f"Characters: {len(characters)}")
         
         if not characters:
-            return []
+            return {}
         
-        all_activities = []
+        completed_activities = {}
         
-        # Собираем активности со всех персонажей, все режимы
-        for cid in characters[:3]:
+        # Берем только первого персонажа для скорости
+        for cid in characters[:1]:
             for mode in [4, 84]:  # Normal and Master raids
-                page = 0
-                while True:
-                    url = f"https://www.bungie.net/Platform/Destiny2/{membership_type}/Account/{membership_id}/Character/{cid}/Stats/Activities/?mode={mode}&count=250&page={page}"
-                    try:
-                        req2 = urllib.request.Request(url, headers=headers)
-                        with urllib.request.urlopen(req2, timeout=15) as r2:
-                            data = json.loads(r2.read())
-                        
-                        activities = data.get('Response', {}).get('activities', [])
-                        if not activities:
-                            break
-                        
-                        all_activities.extend(activities)
-                        
-                        if len(activities) < 250:
-                            break
-                        
-                        page += 1
-                    except Exception as e:
-                        self.debug_log.append(f"Error page {page}, mode {mode}: {e}")
-                        break
-        
-        self.debug_log.append(f"Total activities: {len(all_activities)}")
-        
-        # Фильтруем только рейдовые и завершенные
-        completed_raids = []
-        lowman_raids = []
-        
-        for act in all_activities:
-            details = act.get('activityDetails', {})
-            ahash = details.get('directorActivityHash', 0)
-            
-            if ahash not in RAID_DATABASE:
-                continue
-            
-            # Проверяем что активность завершена
-            completed = act.get('values', {}).get('completed', {}).get('basic', {}).get('value', 0)
-            if completed != 1:  # 1 = Yes, 0 = No
-                continue
-            
-            player_count = int(act.get('values', {}).get('playerCount', {}).get('basic', {}).get('value', 0))
-            
-            is_master = (details.get('mode', 4) == 84)
-            
-            # Получаем детали через PGCR
-            instance_id = details.get('instanceId', '')
-            pgcr_data = self._get_pgcr_details(instance_id) if instance_id else None
-            
-            if pgcr_data:
-                # Проверяем flawless
-                entries = pgcr_data.get('entries', [])
-                flawless = False
-                deaths = 0
-                start_from_beginning = pgcr_data.get('activityWasStartedFromBeginning', False)
+                url = f"https://www.bungie.net/Platform/Destiny2/{membership_type}/Account/{membership_id}/Character/{cid}/Stats/Activities/?mode={mode}&count=100"
                 
-                for entry in entries:
-                    player_info = entry.get('player', {})
-                    if player_info.get('destinyUserInfo', {}).get('membershipId') == membership_id:
-                        flawless = entry.get('values', {}).get('flawless', {}).get('basic', {}).get('value', False)
-                        deaths = int(entry.get('values', {}).get('deaths', {}).get('basic', {}).get('value', 0))
-                        break
+                try:
+                    req2 = urllib.request.Request(url, headers=headers)
+                    with urllib.request.urlopen(req2, timeout=15) as r2:
+                        data = json.loads(r2.read())
+                    
+                    activities = data.get('Response', {}).get('activities', [])
+                    
+                    for act in activities:
+                        ahash = act.get('activityDetails', {}).get('directorActivityHash', 0)
+                        
+                        if ahash not in ACTIVITY_HASHES:
+                            continue
+                        
+                        # Проверяем завершение
+                        completed = act.get('values', {}).get('completed', {}).get('basic', {}).get('value', 0)
+                        if completed != 1:
+                            continue
+                        
+                        activity_name = ACTIVITY_HASHES[ahash]
+                        player_count = int(act.get('values', {}).get('playerCount', {}).get('basic', {}).get('value', 0))
+                        is_master = (act.get('activityDetails', {}).get('mode', 4) == 84)
+                        
+                        # Определяем тип активности
+                        activity_type = "🔥 Master " if is_master else ""
+                        activity_type += "Raid" if ahash in [2381418756, 1441982566, 1374392663, 910380154, 3714931445, 2464903763, 4172311151, 2122313384, 3458480158] else "Dungeon"
+                        
+                        # Сохраняем лучший результат (минимальное количество игроков)
+                        if activity_name not in completed_activities or player_count < completed_activities[activity_name]['players']:
+                            completed_activities[activity_name] = {
+                                'players': player_count,
+                                'type': activity_type,
+                                'date': act.get('period', '')
+                            }
                 
-                is_flawless = flawless or (deaths == 0 and start_from_beginning)
-                is_full = start_from_beginning
-            else:
-                is_flawless = False
-                is_full = False
-            
-            raid_entry = {
-                'hash': ahash,
-                'players': player_count,
-                'is_full': is_full,
-                'is_flawless': is_flawless,
-                'is_master': is_master,
-            }
-            
-            completed_raids.append(raid_entry)
-            
-            if player_count in [1, 2, 3]:
-                raid_name = RAID_DATABASE[ahash]['name']
-                self.debug_log.append(f"LOWMAN: {raid_name} p={player_count} master={is_master} full={is_full} flawless={is_flawless}")
-                lowman_raids.append(raid_entry)
+                except Exception as e:
+                    print(f"Error fetching activities: {e}")
         
-        self.debug_log.append(f"Completed raids: {len(completed_raids)}")
-        self.debug_log.append(f"Lowman raids: {len(lowman_raids)}")
-        
-        return lowman_raids  # Возвращаем только лоумены
+        return completed_activities
 
-    def _get_pgcr_details(self, activity_id):
-        """Получает детали активности через PGCR"""
+    def _fetch_weapon_stats(self, membership_type, membership_id):
+        """Получает статистику по оружию"""
         headers = {
             "X-API-Key": self.api_key,
             "Authorization": f"Bearer {self.oauth_token}"
         }
         
-        url = f"https://www.bungie.net/Platform/Destiny2/Stats/PostGameCarnageReport/{activity_id}/"
-        try:
-            req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=10) as r:
-                data = json.loads(r.read())
-            return data.get('Response', {})
-        except:
-            return None
+        weapon_stats = {}
+        
+        # Получаем профиль с characters
+        profile_url = f"https://www.bungie.net/Platform/Destiny2/{membership_type}/Profile/{membership_id}/?components=100"
+        req = urllib.request.Request(profile_url, headers=headers)
+        with urllib.request.urlopen(req, timeout=10) as r:
+            profile_data = json.loads(r.read())
+        
+        characters = profile_data.get('Response', {}).get('profile', {}).get('data', {}).get('characterIds', [])
+        
+        if not characters:
+            return weapon_stats
+        
+        # Для каждого персонажа получаем статистику оружия
+        for cid in characters[:1]:
+            url = f"https://www.bungie.net/Platform/Destiny2/{membership_type}/Account/{membership_id}/Character/{cid}/Stats/UniqueWeapons/"
+            
+            try:
+                req2 = urllib.request.Request(url, headers=headers)
+                with urllib.request.urlopen(req2, timeout=15) as r2:
+                    data = json.loads(r2.read())
+                
+                weapons = data.get('Response', {}).get('weapons', [])
+                
+                for weapon in weapons:
+                    weapon_name = weapon.get('referenceId', '')
+                    
+                    # Проверяем каждую группу оружия
+                    for group_name, weapon_list in WEAPON_GROUPS.items():
+                        if weapon_name in weapon_list:
+                            kills = weapon.get('values', {}).get('uniqueWeaponKills', {}).get('basic', {}).get('value', 0)
+                            
+                            if group_name not in weapon_stats:
+                                weapon_stats[group_name] = 0
+                            weapon_stats[group_name] += int(kills)
+            
+            except Exception as e:
+                print(f"Error fetching weapon stats: {e}")
+        
+        return weapon_stats
 
-    def _process_raids(self, raids):
-        results = {}
-        for raid in raids:
-            h = raid['hash']
-            p = raid['players']
-            
-            if h not in results:
-                results[h] = {'name': RAID_DATABASE[h]['name'], 'achievements': []}
-            
-            ptype = PLAYER_TYPE_MAP[p]
-            
-            if raid['is_flawless']:
-                atype = f"{ptype}_flawless"
-            elif raid['is_full']:
-                prefix = "master_full_" if raid['is_master'] else "full_"
-                atype = f"{prefix}{ptype}"
-            else:
-                prefix = "master_" if raid['is_master'] else ""
-                atype = f"{prefix}{ptype}_checkpoint"
-            
-            results[h]['achievements'].append({
-                'type': atype, 'players': p, 'is_master': raid['is_master'],
-                'is_flawless': raid['is_flawless'], 'is_full': raid['is_full'],
-            })
+    def _format_analysis(self, activities, weapon_stats):
+        lines = ["🎯 **АНАЛИЗ ПРОФИЛЯ**\n"]
         
-        final = {}
-        for h, data in results.items():
-            best = {}
-            for ach in data['achievements']:
-                key = ach['type']
-                if key not in best or PRIORITY.get(key, 99) < PRIORITY.get(best[key]['type'], 99):
-                    best[key] = ach
+        # Секция с активностями
+        if activities:
+            lines.append("**Завершенные рейды и данжи:**\n")
             
-            # Убираем дубликаты
-            for key in list(best.keys()):
-                if 'flawless' in key:
-                    base = key.replace('_flawless', '')
-                    for suffix in ['_full', '_checkpoint']:
-                        dup_key = f"{base}{suffix}" if not best[key]['is_master'] else f"master_{base}{suffix}"
-                        if dup_key in best:
-                            del best[dup_key]
-                elif 'full' in key:
-                    base = key.replace('full_', '').replace('master_full_', '')
-                    cp_key = f"{base}_checkpoint" if not best[key]['is_master'] else f"master_{base}_checkpoint"
-                    if cp_key in best:
-                        del best[cp_key]
+            # Сортируем по типу и имени
+            sorted_activities = sorted(activities.items(), key=lambda x: (x[1]['type'], x[0]))
             
-            final[h] = {'name': data['name'], 'achievements': list(best.values())}
+            current_type = ""
+            for name, info in sorted_activities:
+                if info['type'] != current_type:
+                    current_type = info['type']
+                    lines.append(f"\n{current_type}:")
+                
+                lines.append(f"  • {name} ({info['players']} игроков)")
         
-        return final
-
-    def _format_results(self, data):
-        if not data:
-            return "😕 Не найдено ни одного лоумена в истории."
-        
-        lines = ["🎯 **ЛУЧШИЕ ЛОУМЕНЫ**\n"]
-        total = sum(len(v['achievements']) for v in data.values())
-        lines.append(f"Всего достижений: {total}\n")
-        
-        for h in sorted(data.keys(), key=lambda x: data[x]['name']):
-            raid = data[h]
-            lines.append(f"**{raid['name']}**")
-            raid['achievements'].sort(key=lambda x: PRIORITY.get(x['type'], 99))
+        # Секция с оружием
+        if weapon_stats:
+            lines.append("\n\n**Оружие и убийства:**\n")
             
-            for ach in raid['achievements']:
-                p = ach['players']
-                plabel = "Solo" if p == 1 else "Duo" if p == 2 else "Trio"
-                parts = []
-                if ach['is_master']:
-                    parts.append("🔥 Master")
-                if ach['is_flawless']:
-                    parts.append(f"💎 {plabel} Flawless")
-                elif ach['is_full']:
-                    parts.append(f"🎯 Full {plabel}")
-                else:
-                    parts.append(f"⭐ {plabel}")
-                lines.append(f"  • {' '.join(parts)}")
+            # Группа 1
+            group1 = ["Duality", "Lorentz Driver", "Icebreaker", "Last Foray", "Frozen Orbit"]
+            group1_stats = []
+            for weapon in group1:
+                if weapon in weapon_stats:
+                    group1_stats.append(f"{weapon}: {weapon_stats[weapon]} kills")
             
-            lines.append("")
+            if group1_stats:
+                lines.append("• " + " | ".join(group1_stats))
+            
+            # Группа 2
+            group2 = ["Izanagi's Burden", "Vigilance Wing"]
+            group2_stats = []
+            for weapon in group2:
+                if weapon in weapon_stats:
+                    group2_stats.append(f"{weapon}: {weapon_stats[weapon]} kills")
+            
+            if group2_stats:
+                lines.append("• " + " | ".join(group2_stats))
+        
+        if not activities and not weapon_stats:
+            return "😕 Не найдено завершенных активностей или статистики оружия."
         
         return "\n".join(lines)
