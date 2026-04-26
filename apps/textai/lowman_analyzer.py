@@ -49,7 +49,6 @@ PLAYER_TYPE_MAP = {
     3: "trio"
 }
 
-# Приоритеты: меньше = лучше
 PRIORITY = {
     "solo_flawless": 1,
     "duo_flawless": 2,
@@ -73,6 +72,7 @@ class LowmanAnalyzer:
     def __init__(self, api_key=None):
         self.api_key = api_key
         self.oauth_token = None
+        self.debug_log = []
 
     def set_oauth_token(self, token):
         self.oauth_token = token
@@ -111,72 +111,136 @@ class LowmanAnalyzer:
         raise Exception("Неподдерживаемый формат ссылки")
 
     def analyze_profile(self, url):
+        self.debug_log = []
+        
         try:
             membership_type, membership_id = self.extract_profile(url)
             raids = self._fetch_raids_via_bungie(membership_type, membership_id)
+            
+            # ВРЕМЕННО: показываем дебаг-лог на сайте
+            if self.debug_log:
+                debug_text = "\n".join(self.debug_log)
+                # Обрезаем если слишком длинный
+                if len(debug_text) > 5000:
+                    debug_text = debug_text[:5000] + "\n... (truncated)"
+                return f"🔍 DEBUG INFO:\n\n{debug_text}\n\n=== END DEBUG ==="
+            
             if not raids:
                 return "❌ Не удалось загрузить рейды."
             
             achievements = self._process_raids(raids)
             return self._format_results(achievements)
         except Exception as e:
-            return f"❌ Ошибка анализа: {str(e)}"
+            debug_text = "\n".join(self.debug_log) if self.debug_log else "No debug data"
+            return f"❌ Ошибка анализа: {str(e)}\n\n🔍 DEBUG:\n{debug_text}"
 
     def _fetch_raids_via_bungie(self, membership_type, membership_id):
+        self.debug_log.append("=== FETCHING RAIDS ===")
+        self.debug_log.append(f"Membership Type: {membership_type}")
+        self.debug_log.append(f"Membership ID: {membership_id}")
+        
         headers = {
             "X-API-Key": self.api_key,
             "Authorization": f"Bearer {self.oauth_token}"
         }
         
+        # Получаем профиль
         profile_url = f"https://www.bungie.net/Platform/Destiny2/{membership_type}/Profile/{membership_id}/?components=100"
-        req = urllib.request.Request(profile_url, headers=headers)
-        with urllib.request.urlopen(req, timeout=10) as r:
-            profile_data = json.loads(r.read())
+        try:
+            req = urllib.request.Request(profile_url, headers=headers)
+            with urllib.request.urlopen(req, timeout=10) as r:
+                profile_data = json.loads(r.read())
+        except Exception as e:
+            self.debug_log.append(f"ERROR getting profile: {e}")
+            return []
         
         characters = profile_data.get('Response', {}).get('profile', {}).get('data', {}).get('characterIds', [])
+        self.debug_log.append(f"Characters found: {len(characters)}")
+        self.debug_log.append(f"Character IDs: {characters[:3]}")
+        
         if not characters:
+            self.debug_log.append("NO CHARACTERS FOUND")
             return []
         
         all_activities = []
+        
         for cid in characters[:3]:
-            for mode in [4, 84]:  # Normal and Master raids
+            for mode in [4, 84]:
+                mode_name = "Normal" if mode == 4 else "Master"
                 url = f"https://www.bungie.net/Platform/Destiny2/{membership_type}/Account/{membership_id}/Character/{cid}/Stats/Activities/?mode={mode}&count=100"
+                
                 try:
                     req2 = urllib.request.Request(url, headers=headers)
                     with urllib.request.urlopen(req2, timeout=15) as r2:
                         data = json.loads(r2.read())
-                    all_activities.extend(data.get('Response', {}).get('activities', []))
-                except:
-                    pass
+                    activities = data.get('Response', {}).get('activities', [])
+                    self.debug_log.append(f"Char {cid[:8]}... mode {mode} ({mode_name}): {len(activities)} activities")
+                    all_activities.extend(activities)
+                except Exception as e:
+                    self.debug_log.append(f"ERROR char {cid[:8]}... mode {mode}: {e}")
+        
+        self.debug_log.append(f"\nTotal activities collected: {len(all_activities)}")
+        
+        # Считаем рейды
+        raid_counts = {}
+        for h in RAID_DATABASE:
+            raid_counts[h] = 0
         
         raids = []
+        raid_activities = []
+        
         for act in all_activities:
             details = act.get('activityDetails', {})
             ahash = details.get('directorActivityHash', 0)
             
-            if ahash not in RAID_DATABASE:
-                continue
+            if ahash in RAID_DATABASE:
+                raid_counts[ahash] += 1
+                raid_activities.append(act)
+        
+        self.debug_log.append(f"\nRaid activities found:")
+        for h, count in raid_counts.items():
+            if count > 0:
+                self.debug_log.append(f"  {RAID_DATABASE[h]['name']}: {count}")
+        
+        self.debug_log.append(f"\n=== DETAILED ACTIVITY LIST ===")
+        
+        for act in raid_activities:
+            details = act.get('activityDetails', {})
+            ahash = details.get('directorActivityHash', 0)
+            raid_name = RAID_DATABASE.get(ahash, {}).get('name', 'Unknown')
             
             try:
                 players = act.get('values', {}).get('playerCount', {}).get('basic', {}).get('value', 0)
             except:
-                players = act.get('values', {}).get('playerCount', {}).get('value', 0)
+                try:
+                    players = act.get('values', {}).get('playerCount', {}).get('value', 0)
+                except:
+                    players = '?'
             
+            mode = details.get('mode', '?')
+            is_master = (mode == 84)
+            
+            completions = act.get('values', {}).get('activityCompletions', {}).get('basic', {}).get('value', '?')
+            flawless_flag = act.get('values', {}).get('flawless', {}).get('basic', {}).get('value', '?')
+            deaths = act.get('values', {}).get('deaths', {}).get('basic', {}).get('value', '?')
+            
+            period = act.get('period', '?')
+            instance = details.get('instanceId', '?')[:8]
+            
+            self.debug_log.append(f"\n{raid_name}:")
+            self.debug_log.append(f"  players={players} master={is_master}")
+            self.debug_log.append(f"  completions={completions} flawless_flag={flawless_flag} deaths={deaths}")
+            self.debug_log.append(f"  period={period} instance={instance}")
+            
+            # Пропускаем нелоумены
             if players not in [1, 2, 3]:
+                self.debug_log.append(f"  -> SKIPPED (not lowman)")
                 continue
             
-            # Определяем тип прохождения
-            is_master = (details.get('mode', 4) == 84)
+            is_full = (completions != '?' and completions > 0)
+            is_flawless = (flawless_flag == True) or (deaths != '?' and deaths == 0)
             
-            # Проверяем full clear
-            completions = act.get('values', {}).get('activityCompletions', {}).get('basic', {}).get('value', 0)
-            
-            # Проверяем flawless
-            flawless = act.get('values', {}).get('flawless', {}).get('basic', {}).get('value', False)
-            deaths = act.get('values', {}).get('deaths', {}).get('basic', {}).get('value', -1)
-            
-            is_flawless = flawless or (deaths == 0)
-            is_full = completions > 0
+            self.debug_log.append(f"  -> ADDED: full={is_full} flawless={is_flawless}")
             
             raids.append({
                 'hash': ahash,
@@ -185,6 +249,17 @@ class LowmanAnalyzer:
                 'is_flawless': is_flawless,
                 'is_master': is_master,
             })
+        
+        self.debug_log.append(f"\n=== RESULT ===")
+        self.debug_log.append(f"Lowman raids found: {len(raids)}")
+        
+        for i, raid in enumerate(raids):
+            name = RAID_DATABASE[raid['hash']]['name']
+            p = raid['players']
+            m = "Master " if raid['is_master'] else ""
+            f = "Full " if raid['is_full'] else ""
+            fl = "Flawless " if raid['is_flawless'] else ""
+            self.debug_log.append(f"  {i+1}. {m}{name}: {p} players ({f}{fl})")
         
         return raids
 
@@ -202,7 +277,6 @@ class LowmanAnalyzer:
                     'achievements': []
                 }
             
-            # Определяем тип достижения
             ptype = PLAYER_TYPE_MAP[p]
             
             if raid['is_flawless']:
@@ -231,16 +305,29 @@ class LowmanAnalyzer:
                 if key not in best or PRIORITY.get(key, 99) < PRIORITY.get(best[key]['type'], 99):
                     best[key] = ach
             
-            # Убираем full если есть flawless
-            keys_to_remove = []
+            # Убираем full если есть flawless того же типа
+            keys_to_remove = set()
             for key in best:
-                if 'flawless' not in key:
-                    flawless_key = key.replace('full_', '').replace('master_full_', 'master_') + '_flawless'
-                    if flawless_key in best or key.replace('checkpoint', 'flawless') in best:
-                        keys_to_remove.append(key)
+                if 'flawless' in key:
+                    base = key.replace('_flawless', '')
+                    # Удаляем full
+                    full_key = f"full_{base}" if not best[key]['is_master'] else f"master_full_{base}"
+                    if full_key in best:
+                        keys_to_remove.add(full_key)
+                    # Удаляем checkpoint
+                    cp_key = f"{base}_checkpoint" if not best[key]['is_master'] else f"master_{base}_checkpoint"
+                    if cp_key in best:
+                        keys_to_remove.add(cp_key)
+                elif 'full' in key:
+                    # Удаляем checkpoint того же типа
+                    base = key.replace('full_', '').replace('master_full_', '')
+                    cp_key = f"{base}_checkpoint" if not best[key]['is_master'] else f"master_{base}_checkpoint"
+                    if cp_key in best:
+                        keys_to_remove.add(cp_key)
             
             for key in keys_to_remove:
-                del best[key]
+                if key in best:
+                    del best[key]
             
             final[h] = {
                 'name': data['name'],
@@ -262,7 +349,6 @@ class LowmanAnalyzer:
             raid = data[h]
             lines.append(f"**{raid['name']}**")
             
-            # Сортируем по приоритету
             raid['achievements'].sort(key=lambda x: PRIORITY.get(x['type'], 99))
             
             for ach in raid['achievements']:
