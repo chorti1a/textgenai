@@ -8,60 +8,64 @@ RAID_DATABASE = {
     2381418756: {
         "name": "Root of Nightmares",
         "has_master": True,
-        "encounters": 4,
     },
     1441982566: {
         "name": "Vow of the Disciple",
         "has_master": True,
-        "encounters": 4,
     },
     1374392663: {
         "name": "King's Fall",
         "has_master": True,
-        "encounters": 5,
     },
     910380154: {
         "name": "Deep Stone Crypt",
         "has_master": False,
-        "encounters": 4,
     },
     3714931445: {
         "name": "Vault of Glass",
         "has_master": True,
-        "encounters": 5,
     },
     2464903763: {
         "name": "Salvation's Edge",
         "has_master": False,
-        "encounters": 5,
     },
     4172311151: {
         "name": "Crota's End",
         "has_master": True,
-        "encounters": 4,
     },
     2122313384: {
         "name": "Last Wish",
         "has_master": False,
-        "encounters": 6,
     },
     3458480158: {
         "name": "Garden of Salvation",
         "has_master": False,
-        "encounters": 4,
     },
-}
-
-DISPLAY_ORDER = {
-    "flawless": 1,
-    "full": 2,
-    "checkpoint": 3
 }
 
 PLAYER_TYPE_MAP = {
     1: "solo",
-    2: "duo", 
+    2: "duo",
     3: "trio"
+}
+
+# Приоритеты: меньше = лучше
+PRIORITY = {
+    "solo_flawless": 1,
+    "duo_flawless": 2,
+    "trio_flawless": 3,
+    "full_solo": 4,
+    "full_duo": 5,
+    "full_trio": 6,
+    "solo_checkpoint": 7,
+    "duo_checkpoint": 8,
+    "trio_checkpoint": 9,
+    "master_full_trio": 10,
+    "master_full_duo": 11,
+    "master_full_solo": 12,
+    "master_trio_checkpoint": 13,
+    "master_duo_checkpoint": 14,
+    "master_solo_checkpoint": 15,
 }
 
 
@@ -113,80 +117,12 @@ class LowmanAnalyzer:
             if not raids:
                 return "❌ Не удалось загрузить рейды."
             
-            achievements = self._categorize_achievements(raids)
-            return self._format_achievements(achievements)
+            achievements = self._process_raids(raids)
+            return self._format_results(achievements)
         except Exception as e:
             return f"❌ Ошибка анализа: {str(e)}"
 
-    def _parse_duration(self, time_str):
-        """Парсер времени"""
-        if not time_str:
-            return 0
-        
-        hours = minutes = seconds = 0
-        
-        h_match = re.search(r'(\d+)\s*h', time_str)
-        if h_match:
-            hours = int(h_match.group(1))
-        
-        m_match = re.search(r'(\d+)\s*m', time_str)
-        if m_match:
-            minutes = int(m_match.group(1))
-        
-        s_match = re.search(r'(\d+)\s*s', time_str)
-        if s_match:
-            seconds = int(s_match.group(1))
-        
-        return hours * 3600 + minutes * 60 + seconds
-
-    def _is_fresh_activity(self, activity):
-        """Определяет fresh activity (полное прохождение с начала)"""
-        # Проверяем startsFromBeginning
-        starts_from_beginning = activity.get('values', {}).get('startsFromBeginning', {}).get('basic', {}).get('value', False)
-        if starts_from_beginning:
-            return True
-        
-        # Проверяем activityCompletions
-        completions = activity.get('values', {}).get('activityCompletions', {}).get('basic', {}).get('value', 0)
-        if completions > 0:
-            return True
-        
-        # Проверяем время (если длинное - вероятно full clear)
-        ahash = activity.get('activityDetails', {}).get('directorActivityHash', 0)
-        raid_info = RAID_DATABASE.get(ahash)
-        if raid_info:
-            time_seconds = self._parse_duration(
-                activity.get('values', {}).get('activityDurationBasic', {}).get('displayValue', '0s')
-            )
-            min_full_time = raid_info.get('encounters', 3) * 600
-            if time_seconds > min_full_time:
-                return True
-        
-        return False
-
-    def _is_flawless(self, activity):
-        """Определяет flawless (без смертей)"""
-        # Прямой флаг flawless
-        if activity.get('values', {}).get('flawless', {}).get('basic', {}).get('value', False):
-            return True
-        
-        # Deaths = 0
-        deaths = activity.get('values', {}).get('deaths', {}).get('basic', {}).get('value', -1)
-        if deaths == 0:
-            return True
-        
-        # completionReason = 0
-        completion_reason = activity.get('values', {}).get('completionReason', {}).get('basic', {}).get('value', -1)
-        if completion_reason == 0:
-            return True
-        
-        return False
-
     def _fetch_raids_via_bungie(self, membership_type, membership_id):
-        print(f"\n=== FETCHING RAIDS ===")
-        print(f"Membership Type: {membership_type}")
-        print(f"Membership ID: {membership_id}")
-        
         headers = {
             "X-API-Key": self.api_key,
             "Authorization": f"Bearer {self.oauth_token}"
@@ -198,189 +134,157 @@ class LowmanAnalyzer:
             profile_data = json.loads(r.read())
         
         characters = profile_data.get('Response', {}).get('profile', {}).get('data', {}).get('characterIds', [])
-        print(f"Characters found: {len(characters)}")
-        print(f"Character IDs: {characters}")
-        
         if not characters:
             return []
         
         all_activities = []
-        RAID_HASHES = set(RAID_DATABASE.keys())
-        modes = [4, 84]
-        
-        debug_counts = {h: 0 for h in RAID_HASHES}
-        
         for cid in characters[:3]:
-            for mode in modes:
+            for mode in [4, 84]:  # Normal and Master raids
                 url = f"https://www.bungie.net/Platform/Destiny2/{membership_type}/Account/{membership_id}/Character/{cid}/Stats/Activities/?mode={mode}&count=100"
                 try:
                     req2 = urllib.request.Request(url, headers=headers)
                     with urllib.request.urlopen(req2, timeout=15) as r2:
                         data = json.loads(r2.read())
-                    activities = data.get('Response', {}).get('activities', [])
-                    
-                    print(f"\nChar {cid}, mode {mode}: found {len(activities)} activities")
-                    
-                    all_activities.extend(activities)
-                except Exception as e:
-                    print(f"Error char {cid}, mode {mode}: {e}")
-        
-        print(f"\nTotal activities to process: {len(all_activities)}")
+                    all_activities.extend(data.get('Response', {}).get('activities', []))
+                except:
+                    pass
         
         raids = []
         for act in all_activities:
             details = act.get('activityDetails', {})
             ahash = details.get('directorActivityHash', 0)
             
-            if ahash not in RAID_HASHES:
+            if ahash not in RAID_DATABASE:
                 continue
-            
-            debug_counts[ahash] += 1
-            
-            print(f"\n=== Activity: {RAID_DATABASE[ahash]['name']} ===")
-            print(f"Hash: {ahash}")
-            print(f"Mode: {details.get('mode')}")
-            print(f"Instance: {details.get('instanceId')}")
             
             try:
                 players = act.get('values', {}).get('playerCount', {}).get('basic', {}).get('value', 0)
             except:
-                try:
-                    players = act.get('values', {}).get('playerCount', {}).get('value', 0)
-                except:
-                    players = 0
-            
-            print(f"Players: {players}")
-            
-            # ДЕБАГ: все значения для определения fresh/flawless
-            values = act.get('values', {})
-            print("Debug values:")
-            for key in ['startsFromBeginning', 'activityCompletions', 'flawless', 'deaths', 'completionReason']:
-                val_data = values.get(key, {})
-                if isinstance(val_data, dict):
-                    val = val_data.get('basic', {}).get('value', 'N/A')
-                else:
-                    val = val_data
-                print(f"  {key}: {val}")
+                players = act.get('values', {}).get('playerCount', {}).get('value', 0)
             
             if players not in [1, 2, 3]:
-                print(f"  SKIPPED: players={players}")
                 continue
             
-            is_master = details.get('mode', 4) == 84
-            is_fresh = self._is_fresh_activity(act)
-            is_flawless = self._is_flawless(act)
+            # Определяем тип прохождения
+            is_master = (details.get('mode', 4) == 84)
             
-            print(f"  is_master: {is_master}")
-            print(f"  is_fresh: {is_fresh}")
-            print(f"  is_flawless: {is_flawless}")
+            # Проверяем full clear
+            completions = act.get('values', {}).get('activityCompletions', {}).get('basic', {}).get('value', 0)
+            
+            # Проверяем flawless
+            flawless = act.get('values', {}).get('flawless', {}).get('basic', {}).get('value', False)
+            deaths = act.get('values', {}).get('deaths', {}).get('basic', {}).get('value', -1)
+            
+            is_flawless = flawless or (deaths == 0)
+            is_full = completions > 0
             
             raids.append({
                 'hash': ahash,
                 'players': players,
-                'date': act.get('period', ''),
-                'is_fresh': is_fresh,
+                'is_full': is_full,
                 'is_flawless': is_flawless,
                 'is_master': is_master,
             })
         
-        print(f"\n=== FINAL COUNTS ===")
-        for h, count in debug_counts.items():
-            if count > 0:
-                print(f"{RAID_DATABASE[h]['name']}: {count} activities")
-        
-        print(f"\nTotal raids found: {len(raids)}")
-        
         return raids
 
-    def _categorize_achievements(self, raids):
-        """Категоризирует достижения по рейдам и типам"""
-        achievements = defaultdict(dict)
+    def _process_raids(self, raids):
+        """Группирует и находит лучшие достижения"""
+        results = {}
         
         for raid in raids:
             h = raid['hash']
             p = raid['players']
-            player_type = PLAYER_TYPE_MAP[p]
             
-            # Определяем категорию
+            if h not in results:
+                results[h] = {
+                    'name': RAID_DATABASE[h]['name'],
+                    'achievements': []
+                }
+            
+            # Определяем тип достижения
+            ptype = PLAYER_TYPE_MAP[p]
+            
             if raid['is_flawless']:
-                category = 'flawless'
-            elif raid['is_fresh']:
-                category = 'full'
+                atype = f"{ptype}_flawless"
+            elif raid['is_full']:
+                prefix = "master_full_" if raid['is_master'] else "full_"
+                atype = f"{prefix}{ptype}"
             else:
-                category = 'checkpoint'
+                prefix = "master_" if raid['is_master'] else ""
+                atype = f"{prefix}{ptype}_checkpoint"
             
-            # Ключ для проверки дубликатов
-            base_key = f"{'master_' if raid['is_master'] else ''}{player_type}"
-            
-            # Если уже есть flawless - не добавляем full
-            if category == 'full' and f"{base_key}_flawless" in achievements[h]:
-                continue
-            
-            # Если добавляем flawless - удаляем full если был
-            if category == 'flawless' and f"{base_key}_full" in achievements[h]:
-                del achievements[h][f"{base_key}_full"]
-            
-            key = f"{base_key}_{category}"
-            
-            achievements[h][key] = {
+            results[h]['achievements'].append({
+                'type': atype,
                 'players': p,
-                'category': category,
                 'is_master': raid['is_master'],
                 'is_flawless': raid['is_flawless'],
-                'is_fresh': raid['is_fresh'],
-                'raid_name': RAID_DATABASE[h]['name'],
+                'is_full': raid['is_full'],
+            })
+        
+        # Убираем дубликаты (оставляем лучшее)
+        final = {}
+        for h, data in results.items():
+            best = {}
+            for ach in data['achievements']:
+                key = ach['type']
+                if key not in best or PRIORITY.get(key, 99) < PRIORITY.get(best[key]['type'], 99):
+                    best[key] = ach
+            
+            # Убираем full если есть flawless
+            keys_to_remove = []
+            for key in best:
+                if 'flawless' not in key:
+                    flawless_key = key.replace('full_', '').replace('master_full_', 'master_') + '_flawless'
+                    if flawless_key in best or key.replace('checkpoint', 'flawless') in best:
+                        keys_to_remove.append(key)
+            
+            for key in keys_to_remove:
+                del best[key]
+            
+            final[h] = {
+                'name': data['name'],
+                'achievements': list(best.values())
             }
         
-        return achievements
+        return final
 
-    def _get_achievement_label(self, achievement):
-        """Создает читаемую метку достижения"""
-        p = achievement['players']
-        player_label = "Solo" if p == 1 else "Duo" if p == 2 else "Trio"
-        
-        parts = []
-        
-        if achievement['is_master']:
-            parts.append("🔥 Master")
-        
-        if achievement['is_flawless']:
-            parts.append(f"💎 {player_label} Flawless")
-        elif achievement['is_fresh']:
-            parts.append(f"🎯 Full {player_label}")
-        else:
-            parts.append(f"⭐ {player_label}")
-        
-        return " ".join(parts)
-
-    def _format_achievements(self, achievements):
-        if not achievements:
+    def _format_results(self, data):
+        if not data:
             return "😕 Не найдено ни одного лоумена в истории."
         
         lines = ["🎯 **ЛУЧШИЕ ЛОУМЕНЫ**\n"]
         
-        total_achievements = sum(len(raid_achievements) for raid_achievements in achievements.values())
-        lines.append(f"Всего достижений: {total_achievements}\n")
+        total = sum(len(v['achievements']) for v in data.values())
+        lines.append(f"Всего достижений: {total}\n")
         
-        # Сортируем рейды по имени
-        for h in sorted(achievements.keys(), key=lambda x: achievements[x][list(achievements[x].keys())[0]]['raid_name']):
-            raid_data = achievements[h]
+        for h in sorted(data.keys(), key=lambda x: data[x]['name']):
+            raid = data[h]
+            lines.append(f"**{raid['name']}**")
             
-            # Сортируем достижения: flawless > full > checkpoint, solo > duo > trio
-            sorted_keys = sorted(raid_data.keys(), 
-                               key=lambda k: (
-                                   DISPLAY_ORDER[raid_data[k]['category']],
-                                   -raid_data[k]['is_master'],
-                                   raid_data[k]['players']
-                               ))
+            # Сортируем по приоритету
+            raid['achievements'].sort(key=lambda x: PRIORITY.get(x['type'], 99))
             
-            lines.append(f"**{raid_data[sorted_keys[0]]['raid_name']}**")
-            
-            for key in sorted_keys:
-                achievement = raid_data[key]
-                label = self._get_achievement_label(achievement)
+            for ach in raid['achievements']:
+                label = self._get_label(ach)
                 lines.append(f"  • {label}")
             
             lines.append("")
         
         return "\n".join(lines)
+
+    def _get_label(self, ach):
+        p = ach['players']
+        plabel = "Solo" if p == 1 else "Duo" if p == 2 else "Trio"
+        
+        parts = []
+        if ach['is_master']:
+            parts.append("🔥 Master")
+        if ach['is_flawless']:
+            parts.append(f"💎 {plabel} Flawless")
+        elif ach['is_full']:
+            parts.append(f"🎯 Full {plabel}")
+        else:
+            parts.append(f"⭐ {plabel}")
+        
+        return " ".join(parts)
