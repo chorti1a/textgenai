@@ -74,14 +74,11 @@ class LowmanAnalyzer:
         
         try:
             membership_type, membership_id = self.extract_profile(url)
-            raids = self._fetch_raids_via_bungie(membership_type, membership_id)
+            raids = self._fetch_all_raids(membership_type, membership_id)
             
-            # ВРЕМЕННО: показываем дебаг-лог
+            # ВРЕМЕННО: дебаг
             if self.debug_log:
-                debug_text = "\n".join(self.debug_log)
-                if len(debug_text) > 8000:
-                    debug_text = debug_text[:8000] + "\n... (truncated)"
-                return f"🔍 DEBUG INFO:\n\n{debug_text}\n\n=== END DEBUG ==="
+                return f"🔍 DEBUG:\n\n" + "\n".join(self.debug_log[-50:])
             
             if not raids:
                 return "❌ Не удалось загрузить рейды."
@@ -89,8 +86,120 @@ class LowmanAnalyzer:
             achievements = self._process_raids(raids)
             return self._format_results(achievements)
         except Exception as e:
-            debug_text = "\n".join(self.debug_log) if self.debug_log else "No debug data"
-            return f"❌ Ошибка анализа: {str(e)}\n\n🔍 DEBUG:\n{debug_text}"
+            debug_text = "\n".join(self.debug_log[-20:]) if self.debug_log else ""
+            return f"❌ Ошибка: {str(e)}\n\n{debug_text}"
+
+    def _fetch_all_raids(self, membership_type, membership_id):
+        """Получает ВСЕ рейдовые активности через PGCR"""
+        headers = {
+            "X-API-Key": self.api_key,
+            "Authorization": f"Bearer {self.oauth_token}"
+        }
+        
+        # Получаем профиль
+        profile_url = f"https://www.bungie.net/Platform/Destiny2/{membership_type}/Profile/{membership_id}/?components=100"
+        req = urllib.request.Request(profile_url, headers=headers)
+        with urllib.request.urlopen(req, timeout=10) as r:
+            profile_data = json.loads(r.read())
+        
+        characters = profile_data.get('Response', {}).get('profile', {}).get('data', {}).get('characterIds', [])
+        self.debug_log.append(f"Characters: {len(characters)}")
+        
+        if not characters:
+            return []
+        
+        all_activities = []
+        
+        # Собираем активности со всех персонажей, все режимы
+        for cid in characters[:3]:
+            for mode in [4, 84]:  # Normal and Master raids
+                page = 0
+                while True:
+                    url = f"https://www.bungie.net/Platform/Destiny2/{membership_type}/Account/{membership_id}/Character/{cid}/Stats/Activities/?mode={mode}&count=250&page={page}"
+                    try:
+                        req2 = urllib.request.Request(url, headers=headers)
+                        with urllib.request.urlopen(req2, timeout=15) as r2:
+                            data = json.loads(r2.read())
+                        
+                        activities = data.get('Response', {}).get('activities', [])
+                        if not activities:
+                            break
+                        
+                        all_activities.extend(activities)
+                        
+                        if len(activities) < 250:
+                            break
+                        
+                        page += 1
+                    except Exception as e:
+                        self.debug_log.append(f"Error page {page}, mode {mode}: {e}")
+                        break
+        
+        self.debug_log.append(f"Total activities: {len(all_activities)}")
+        
+        # Фильтруем только рейдовые и завершенные
+        completed_raids = []
+        lowman_raids = []
+        
+        for act in all_activities:
+            details = act.get('activityDetails', {})
+            ahash = details.get('directorActivityHash', 0)
+            
+            if ahash not in RAID_DATABASE:
+                continue
+            
+            # Проверяем что активность завершена
+            completed = act.get('values', {}).get('completed', {}).get('basic', {}).get('value', 0)
+            if completed != 1:  # 1 = Yes, 0 = No
+                continue
+            
+            player_count = int(act.get('values', {}).get('playerCount', {}).get('basic', {}).get('value', 0))
+            
+            is_master = (details.get('mode', 4) == 84)
+            
+            # Получаем детали через PGCR
+            instance_id = details.get('instanceId', '')
+            pgcr_data = self._get_pgcr_details(instance_id) if instance_id else None
+            
+            if pgcr_data:
+                # Проверяем flawless
+                entries = pgcr_data.get('entries', [])
+                flawless = False
+                deaths = 0
+                start_from_beginning = pgcr_data.get('activityWasStartedFromBeginning', False)
+                
+                for entry in entries:
+                    player_info = entry.get('player', {})
+                    if player_info.get('destinyUserInfo', {}).get('membershipId') == membership_id:
+                        flawless = entry.get('values', {}).get('flawless', {}).get('basic', {}).get('value', False)
+                        deaths = int(entry.get('values', {}).get('deaths', {}).get('basic', {}).get('value', 0))
+                        break
+                
+                is_flawless = flawless or (deaths == 0 and start_from_beginning)
+                is_full = start_from_beginning
+            else:
+                is_flawless = False
+                is_full = False
+            
+            raid_entry = {
+                'hash': ahash,
+                'players': player_count,
+                'is_full': is_full,
+                'is_flawless': is_flawless,
+                'is_master': is_master,
+            }
+            
+            completed_raids.append(raid_entry)
+            
+            if player_count in [1, 2, 3]:
+                raid_name = RAID_DATABASE[ahash]['name']
+                self.debug_log.append(f"LOWMAN: {raid_name} p={player_count} master={is_master} full={is_full} flawless={is_flawless}")
+                lowman_raids.append(raid_entry)
+        
+        self.debug_log.append(f"Completed raids: {len(completed_raids)}")
+        self.debug_log.append(f"Lowman raids: {len(lowman_raids)}")
+        
+        return lowman_raids  # Возвращаем только лоумены
 
     def _get_pgcr_details(self, activity_id):
         """Получает детали активности через PGCR"""
@@ -105,98 +214,8 @@ class LowmanAnalyzer:
             with urllib.request.urlopen(req, timeout=10) as r:
                 data = json.loads(r.read())
             return data.get('Response', {})
-        except Exception as e:
-            self.debug_log.append(f"  PGCR error: {e}")
+        except:
             return None
-
-    def _fetch_raids_via_bungie(self, membership_type, membership_id):
-        self.debug_log.append("=== FETCHING RAIDS ===")
-        self.debug_log.append(f"Membership Type: {membership_type}")
-        self.debug_log.append(f"Membership ID: {membership_id}")
-        
-        headers = {
-            "X-API-Key": self.api_key,
-            "Authorization": f"Bearer {self.oauth_token}"
-        }
-        
-        # Получаем профиль
-        profile_url = f"https://www.bungie.net/Platform/Destiny2/{membership_type}/Profile/{membership_id}/?components=100"
-        try:
-            req = urllib.request.Request(profile_url, headers=headers)
-            with urllib.request.urlopen(req, timeout=10) as r:
-                profile_data = json.loads(r.read())
-        except Exception as e:
-            self.debug_log.append(f"ERROR getting profile: {e}")
-            return []
-        
-        characters = profile_data.get('Response', {}).get('profile', {}).get('data', {}).get('characterIds', [])
-        self.debug_log.append(f"Characters found: {len(characters)}")
-        
-        if not characters:
-            return []
-        
-        all_activities = []
-        
-        for cid in characters[:1]:  # Берем только первого персонажа для теста
-            for mode in [4, 84]:
-                mode_name = "Normal" if mode == 4 else "Master"
-                url = f"https://www.bungie.net/Platform/Destiny2/{membership_type}/Account/{membership_id}/Character/{cid}/Stats/Activities/?mode={mode}&count=250"
-                
-                try:
-                    req2 = urllib.request.Request(url, headers=headers)
-                    with urllib.request.urlopen(req2, timeout=15) as r2:
-                        data = json.loads(r2.read())
-                    activities = data.get('Response', {}).get('activities', [])
-                    self.debug_log.append(f"Char {cid[:8]}... mode {mode} ({mode_name}): {len(activities)} activities")
-                    all_activities.extend(activities)
-                except Exception as e:
-                    self.debug_log.append(f"ERROR char {cid[:8]}... mode {mode}: {e}")
-        
-        self.debug_log.append(f"\nTotal activities: {len(all_activities)}")
-        
-        # Анализируем только рейдовые активности
-        raid_activities = []
-        for act in all_activities:
-            details = act.get('activityDetails', {})
-            ahash = details.get('directorActivityHash', 0)
-            if ahash in RAID_DATABASE:
-                raid_activities.append(act)
-        
-        self.debug_log.append(f"Raid activities: {len(raid_activities)}")
-        
-        # Показываем ВСЕ поля первой рейдовой активности
-        if raid_activities:
-            first = raid_activities[0]
-            self.debug_log.append(f"\n=== FULL ACTIVITY STRUCTURE ===")
-            self.debug_log.append(json.dumps(first, indent=2, default=str)[:3000])
-            
-            # Получаем PGCR для деталей
-            instance_id = first.get('activityDetails', {}).get('instanceId', '')
-            if instance_id:
-                self.debug_log.append(f"\n=== PGCR for {instance_id} ===")
-                pgcr = self._get_pgcr_details(instance_id)
-                if pgcr:
-                    # Показываем ключевые поля
-                    self.debug_log.append(f"Period: {pgcr.get('period')}")
-                    self.debug_log.append(f"Starting Phase: {pgcr.get('startingPhaseIndex')}")
-                    self.debug_log.append(f"Activity Was Started From Beginning: {pgcr.get('activityWasStartedFromBeginning')}")
-                    
-                    entries = pgcr.get('entries', [])
-                    self.debug_log.append(f"Players in PGCR: {len(entries)}")
-                    
-                    # Ищем нашего игрока
-                    for entry in entries:
-                        player_info = entry.get('player', {})
-                        if player_info.get('destinyUserInfo', {}).get('membershipId') == membership_id:
-                            self.debug_log.append(f"\nOur player entry:")
-                            self.debug_log.append(f"  Completed: {entry.get('values', {}).get('completed', {}).get('basic', {}).get('value')}")
-                            self.debug_log.append(f"  Deaths: {entry.get('values', {}).get('deaths', {}).get('basic', {}).get('value')}")
-                            self.debug_log.append(f"  Completed encounters: {entry.get('values', {}).get('activityCompletions', {}).get('basic', {}).get('value')}")
-                            self.debug_log.append(f"  Flawless: {entry.get('values', {}).get('flawless', {}).get('basic', {}).get('value')}")
-                            self.debug_log.append(f"  Player count: {entry.get('values', {}).get('playerCount', {}).get('basic', {}).get('value')}")
-                            break
-        
-        return []
 
     def _process_raids(self, raids):
         results = {}
