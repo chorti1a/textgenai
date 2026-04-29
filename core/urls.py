@@ -7,5 +7,4 @@ urlpatterns = [
     path('api/check/', views.raid_duality_check, name='api_check'),
     path('admin/', admin.site.urls),
     path('textai/', include('apps.textai.urls')),
-    path('duality/', include('apps.textai.urls')),
 ]
