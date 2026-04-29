@@ -1,26 +1,41 @@
-import json
+from django.shortcuts import render
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
+import json
 from .lowman_analyzer import LowmanAnalyzer
+
+def raid_duality_tracker(request):
+    """Главная страница трекера"""
+    return render(request, 'raid_duality_tracker.html')
+
 
 @csrf_exempt
 def raid_duality_check(request):
-    if request.method == 'POST':
-        try:
-            data = json.loads(request.body)
-            bungie_id = data.get('bungie_id', '').strip()
-            
-            if not bungie_id:
-                return JsonResponse({'error': 'Введите Bungie ID'})
-            
-            analyzer = LowmanAnalyzer(api_key="YOUR_API_KEY")
-            # Установите OAuth токен если есть
-            # analyzer.set_oauth_token(request.session.get('oauth_token'))
-            
-            results = analyzer.check_duality_weapons(bungie_id)
-            return JsonResponse(results)
-        
-        except Exception as e:
-            return JsonResponse({'error': str(e)})
+    """API эндпоинт для проверки рейдов"""
+    if request.method != 'POST':
+        return JsonResponse({'error': 'POST only'}, status=405)
     
-    return JsonResponse({'error': 'POST only'})
+    try:
+        data = json.loads(request.body)
+        bungie_id = data.get('bungie_id', '').strip()
+        
+        if not bungie_id:
+            return JsonResponse({'error': 'Введите Bungie ID'})
+        
+        if '#' not in bungie_id:
+            return JsonResponse({'error': 'Формат: name#1234'})
+        
+        analyzer = LowmanAnalyzer(api_key="YOUR_BUNGIE_API_KEY")
+        
+        # Если есть OAuth токен в сессии
+        oauth_token = request.session.get('oauth_token')
+        if oauth_token:
+            analyzer.set_oauth_token(oauth_token)
+        
+        results = analyzer.check_duality_weapons(bungie_id)
+        return JsonResponse(results)
+    
+    except json.JSONDecodeError:
+        return JsonResponse({'error': 'Невалидный JSON'})
+    except Exception as e:
+        return JsonResponse({'error': str(e)})
