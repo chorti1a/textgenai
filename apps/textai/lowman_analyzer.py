@@ -66,17 +66,29 @@ class LowmanAnalyzer:
             return {'error': str(e)}
 
     def _search_player(self, display_name, code):
-        for platform in [3, 1, 2]:
+        """Ищет игрока по Bungie ID"""
+        headers = self._get_headers()
+        
+        # Пробуем все платформы
+        for platform in [3, 1, 2]:  # Steam, Xbox, PSN
+            # Кодируем # как %23
             url = f"https://www.bungie.net/Platform/Destiny2/SearchDestinyPlayer/{platform}/{display_name}%23{code}/"
+            
             try:
-                req = urllib.request.Request(url, headers=self._get_headers())
+                print(f"Searching: {url}")  # Отладка
+                req = urllib.request.Request(url, headers=headers)
                 with urllib.request.urlopen(req, timeout=10) as r:
                     data = json.loads(r.read())
+                
+                print(f"Response: {data}")  # Отладка
+                
                 players = data.get('Response', [])
                 if players:
                     return players[0].get('membershipId')
-            except:
+            except Exception as e:
+                print(f"Error: {e}")
                 continue
+        
         return None
 
     def _get_raid_instances(self, membership_id):
