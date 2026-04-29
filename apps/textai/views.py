@@ -24,7 +24,7 @@ def raid_duality_check(request):
         if '#' not in bungie_id:
             return JsonResponse({'error': 'Формат: name#1234'})
         
-        analyzer = LowmanAnalyzer(api_key="ВАШ_API_КЛЮЧ")
+        analyzer = LowmanAnalyzer(api_key="ВАШ_API_КЛЮЧ_ЗДЕСЬ")
         
         results = analyzer.check_duality_weapons(bungie_id)
         return JsonResponse(results)
