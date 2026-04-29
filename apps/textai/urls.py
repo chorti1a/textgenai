@@ -1,10 +1,8 @@
-from django.contrib import admin
-from django.urls import path, include
-from apps.textai import views
+from django.urls import path
+from . import views
 
 urlpatterns = [
-    path('', views.raid_duality_tracker, name='home'),
-    path('admin/', admin.site.urls),
-    path('textai/', include('apps.textai.urls')),
-    path('duality/', include('apps.textai.urls')),
+    path('', views.raid_duality_tracker, name='raid_duality_tracker'),
+    path('api/check/', views.raid_duality_check, name='raid_duality_check'),
+    path('raid-checker/', views.raid_duality_check, name='raid_duality_check_alt'),
 ]
