@@ -25,7 +25,7 @@ def raid_duality_check(request):
         if '#' not in bungie_id:
             return JsonResponse({'error': 'Формат: name#1234'})
         
-        analyzer = LowmanAnalyzer(api_key="YOUR_BUNGIE_API_KEY")
+        analyzer = LowmanAnalyzer(api_key="f459aa35317b424c9829706e1c32ee1c")
         
         # Если есть OAuth токен в сессии
         oauth_token = request.session.get('oauth_token')
