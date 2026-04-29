@@ -1,4 +1,4 @@
-from django.shortcuts import render
+rom django.shortcuts import render
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 import json
@@ -10,7 +10,6 @@ def raid_duality_tracker(request):
     return render(request, 'raid_duality_tracker.html')
 
 
-@csrf_exempt
 def raid_duality_check(request):
     """API эндпоинт для проверки рейдов"""
     if request.method != 'POST':
