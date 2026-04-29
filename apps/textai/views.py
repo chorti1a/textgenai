@@ -1,4 +1,4 @@
-rom django.shortcuts import render
+from django.shortcuts import render
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 import json
@@ -6,12 +6,11 @@ from .lowman_analyzer import LowmanAnalyzer
 
 
 def raid_duality_tracker(request):
-    """Главная страница трекера"""
     return render(request, 'raid_duality_tracker.html')
 
 
+@csrf_exempt
 def raid_duality_check(request):
-    """API эндпоинт для проверки рейдов"""
     if request.method != 'POST':
         return JsonResponse({'error': 'POST only'}, status=405)
     
@@ -33,8 +32,4 @@ def raid_duality_check(request):
     except json.JSONDecodeError:
         return JsonResponse({'error': 'Невалидный JSON'})
     except Exception as e:
-        import traceback
-        return JsonResponse({
-            'error': str(e),
-            'traceback': traceback.format_exc()
-        })
+        return JsonResponse({'error': str(e)})
