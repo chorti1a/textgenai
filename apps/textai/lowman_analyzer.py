@@ -33,73 +33,60 @@ class LowmanAnalyzer:
             headers["Authorization"] = f"Bearer {self.oauth_token}"
         return headers
 
-def check_duality_weapons(self, bungie_id):
-    """Проверяет рейды на наличие убийств с Duality/Fourth Horseman"""
-    debug_info = []
-    
-    try:
-        debug_info.append(f"Input: {bungie_id}")
+    def test(self):
+        return "LowmanAnalyzer is working!"
+
+    def check_duality_weapons(self, bungie_id):
+        debug_info = []
         
-        # Проверяем формат
-        if '#' not in bungie_id:
-            return {'error': 'Формат должен быть name#1234'}
-        
-        display_name, code = bungie_id.split('#')
-        debug_info.append(f"Name: {display_name}, Code: {code}")
-        
-        # Ищем игрока
-        membership_id = self._search_player_debug(display_name, code, debug_info)
-        
-        if not membership_id:
-            return {
-                'error': 'Игрок не найден',
-                'debug': '\n'.join(debug_info)
-            }
-        
-        debug_info.append(f"Membership ID: {membership_id}")
-        
-        # Получаем рейды
-        raids = self._get_raid_instances(membership_id)
-        debug_info.append(f"Found raids: {len(raids)}")
-        
-        if not raids:
-            return {
-                'results': [], 
-                'total_checked': 0,
-                'debug': '\n'.join(debug_info)
-            }
-        
-        results = []
-        for raid in raids[:5]:  # Проверяем только первые 5 для теста
-            weapon_kills = self._check_pgcr_weapons(raid['instance_id'], membership_id)
-            debug_info.append(f"Raid: {raid['name']} | Weapons: {weapon_kills}")
+        try:
+            debug_info.append(f"Input: {bungie_id}")
             
-            if weapon_kills:
-                results.append({
-                    'raid_name': raid['name'],
-                    'difficulty': 'Standard',
-                    'date': raid['date'],
-                    'time': raid['time'],
-                    'completed': raid['completed'],
-                    'instance_id': raid['instance_id'],
-                    'weapons': weapon_kills
-                })
+            if '#' not in bungie_id:
+                return {'error': 'Формат должен быть name#1234', 'debug': '\n'.join(debug_info)}
+            
+            display_name, code = bungie_id.split('#')
+            debug_info.append(f"Name: {display_name}, Code: {code}")
+            
+            membership_id = self._search_player(display_name, code, debug_info)
+            
+            if not membership_id:
+                return {'error': 'Игрок не найден', 'debug': '\n'.join(debug_info)}
+            
+            debug_info.append(f"Membership ID: {membership_id}")
+            
+            raids = self._get_raid_instances(membership_id)
+            debug_info.append(f"Found raids: {len(raids)}")
+            
+            if not raids:
+                return {'results': [], 'total_checked': 0, 'debug': '\n'.join(debug_info)}
+            
+            results = []
+            for raid in raids[:10]:
+                weapon_kills = self._check_pgcr_weapons(raid['instance_id'], membership_id)
+                debug_info.append(f"Raid: {raid['name']} | {raid['date']} | Weapons: {weapon_kills}")
+                
+                if weapon_kills:
+                    results.append({
+                        'raid_name': raid['name'],
+                        'difficulty': 'Standard',
+                        'date': raid['date'],
+                        'time': raid['time'],
+                        'completed': raid['completed'],
+                        'instance_id': raid['instance_id'],
+                        'weapons': weapon_kills
+                    })
+            
+            return {
+                'results': results,
+                'total_checked': len(raids),
+                'debug': '\n'.join(debug_info)
+            }
         
-        return {
-            'results': results,
-            'total_checked': len(raids),
-            'debug': '\n'.join(debug_info)
-        }
-    
-    except Exception as e:
-        return {
-            'error': str(e),
-            'debug': '\n'.join(debug_info)
-        }
+        except Exception as e:
+            return {'error': str(e), 'debug': '\n'.join(debug_info)}
 
-
-    def _search_player_debug(self, display_name, code, debug_info):
-        """Ищет игрока с отладкой"""
+    def _search_player(self, display_name, code, debug_info):
         headers = self._get_headers()
         
         for platform in [3, 1, 2]:
@@ -109,42 +96,17 @@ def check_duality_weapons(self, bungie_id):
             try:
                 req = urllib.request.Request(url, headers=headers)
                 with urllib.request.urlopen(req, timeout=10) as r:
-                    response_text = r.read().decode('utf-8')
-                    data = json.loads(response_text)
-                
-                players = data.get('Response', [])
-                debug_info.append(f"{platform_name}: {len(players)} players found")
-                
-                if players:
-                    return players[0].get('membershipId')
-            except Exception as e:
-                debug_info.append(f"{platform_name}: Error - {str(e)}")
-        
-        return None
-
-    def _search_player(self, display_name, code):
-        """Ищет игрока по Bungie ID"""
-        headers = self._get_headers()
-        
-        # Пробуем все платформы
-        for platform in [3, 1, 2]:  # Steam, Xbox, PSN
-            # Кодируем # как %23
-            url = f"https://www.bungie.net/Platform/Destiny2/SearchDestinyPlayer/{platform}/{display_name}%23{code}/"
-            
-            try:
-                print(f"Searching: {url}")  # Отладка
-                req = urllib.request.Request(url, headers=headers)
-                with urllib.request.urlopen(req, timeout=10) as r:
                     data = json.loads(r.read())
                 
-                print(f"Response: {data}")  # Отладка
-                
                 players = data.get('Response', [])
+                debug_info.append(f"{platform_name}: {len(players)} players")
+                
                 if players:
-                    return players[0].get('membershipId')
+                    player = players[0]
+                    debug_info.append(f"Found: {player.get('displayName')}#{player.get('bungieNetDisplayCode')}")
+                    return player.get('membershipId')
             except Exception as e:
-                print(f"Error: {e}")
-                continue
+                debug_info.append(f"{platform_name}: Error - {str(e)}")
         
         return None
 
