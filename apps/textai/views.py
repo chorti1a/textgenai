@@ -1,3 +1,15 @@
+from django.shortcuts import render
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+import json
+from .lowman_analyzer import LowmanAnalyzer
+
+
+def raid_duality_tracker(request):
+    """Главная страница трекера"""
+    return render(request, 'raid_duality_tracker.html')
+
+
 @csrf_exempt
 def raid_duality_check(request):
     """API эндпоинт для проверки рейдов"""
@@ -14,7 +26,6 @@ def raid_duality_check(request):
         if '#' not in bungie_id:
             return JsonResponse({'error': 'Формат: name#1234'})
         
-        # Используйте ваш ключ
         analyzer = LowmanAnalyzer(api_key="ВАШ_API_КЛЮЧ")
         
         results = analyzer.check_duality_weapons(bungie_id)
